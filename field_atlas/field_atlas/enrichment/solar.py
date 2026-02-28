@@ -302,8 +302,8 @@ def calculate_solar(
             sun_path.append(
                 {
                     "hour": hour,
-                    "altitude_deg": round(alt, 2),
-                    "azimuth_deg": round(az, 2),
+                    "altitude_deg": float(round(alt, 2)),
+                    "azimuth_deg": float(round(az, 2)),
                 }
             )
 
@@ -318,8 +318,8 @@ def calculate_solar(
         day_length_hours=round(day_length_hours, 4),
         golden_hour_morning_end=gh_morning_end_str,
         golden_hour_evening_start=gh_evening_start_str,
-        noon_altitude_deg=round(noon_alt, 2),
-        noon_azimuth_deg=round(noon_az, 2),
+        noon_altitude_deg=float(round(noon_alt, 2)),
+        noon_azimuth_deg=float(round(noon_az, 2)),
         sun_path=sun_path,
     )
 
@@ -372,8 +372,8 @@ def sun_arc_points(solar: SolarData, num_points: int = 48) -> list[dict]:
         points.append(
             {
                 "fraction": round(fraction, 6),
-                "altitude_deg": round(alt, 3),
-                "azimuth_deg": round(az, 3),
+                "altitude_deg": float(round(alt, 3)),
+                "azimuth_deg": float(round(az, 3)),
             }
         )
 

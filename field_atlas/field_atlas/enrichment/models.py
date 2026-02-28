@@ -77,6 +77,7 @@ def enrich(
     route_points: list[dict] | None = None,
     timezone_str: str = "America/New_York",
     notes: str | None = None,
+    track_name: str = "",
 ) -> EnrichmentData:
     """Fetch weather, solar, and feature enrichment data for one outing.
 
@@ -136,6 +137,7 @@ def enrich(
         weather=weather,
         solar=solar,
         features=features,
+        location_name=derive_location_name(track_name, features),
         notes=notes,
     )
 
@@ -205,6 +207,40 @@ def format_info_block(
         "solar_line": solar_line,
         "feature_labels": feature_labels,
     }
+
+
+# ---------------------------------------------------------------------------
+# Location name helper
+# ---------------------------------------------------------------------------
+
+
+def derive_location_name(track_name: str, features: FeatureSet | None) -> str:
+    """Derive a human-readable location name from track metadata and features.
+
+    Rules (in priority order):
+    1. If the track name looks like a real name (not all-caps, not a filename
+       or underscore slug), return it in title case.
+    2. If features are available, use the highest-priority peak name + "Area".
+       If no peak exists, fall back to the first ranked feature.
+    3. Otherwise return "Unknown Location".
+    """
+    name = track_name.strip()
+    bare = name.rsplit(".", 1)[0] if "." in name else name
+
+    is_all_caps = bare.replace(" ", "").isupper() and len(bare.replace(" ", "")) > 2
+    is_slug = "_" in bare and bare.replace("_", "").replace("-", "").isalnum()
+    has_extension = "." in name
+
+    if not is_all_caps and not is_slug and not has_extension:
+        return bare.title()
+
+    if features and features.features:
+        _PEAK_TYPES = {"peak", "summit", "hill"}
+        peaks = [f for f in features.features if f.feature_type in _PEAK_TYPES]
+        anchor = peaks[0] if peaks else features.features[0]
+        return f"{anchor.name} Area"
+
+    return "Unknown Location"
 
 
 # ---------------------------------------------------------------------------

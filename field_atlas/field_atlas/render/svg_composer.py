@@ -9,9 +9,12 @@ this module is expected to be heavily extended in Phase 3.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 
 import svgwrite
+
+if TYPE_CHECKING:
+    from field_atlas.enrichment.models import EnrichmentData
 
 
 # ---------------------------------------------------------------------------
@@ -85,6 +88,7 @@ def render_terrain_svg(
     width_mm: float = 457.2,
     height_mm: float = 609.6,
     margin_mm: float = 25.4,
+    enrichment: EnrichmentData | None = None,
 ) -> str:
     """Render contour lines and a hiking route as a print-ready SVG.
 
@@ -240,6 +244,7 @@ def add_title_block(
     distance_km: float,
     elevation_gain_m: float,
     position: str = "bottom-left",
+    enrichment: EnrichmentData | None = None,
 ) -> None:
     """Add a metadata text block to a svgwrite Drawing in the margin area.
 

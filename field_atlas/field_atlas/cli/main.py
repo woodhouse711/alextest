@@ -61,6 +61,7 @@ def _run_enrichment(
     notes: str | None,
     weather_file: str | None,
     features_file: str | None,
+    track_name: str = "",
 ) -> EnrichmentData:
     """Fetch enrichment data and apply any explicit file overrides.
 
@@ -78,6 +79,7 @@ def _run_enrichment(
         route_points=route_points,
         timezone_str="America/New_York",
         notes=notes,
+        track_name=track_name,
     )
 
     # --- honour explicit file overrides (bypass live API / cache) -----------
@@ -261,6 +263,7 @@ def render(
             notes=notes,
             weather_file=weather_file,
             features_file=features_file,
+            track_name=track.name,
         )
 
     # ------------------------------------------------------------------
@@ -331,6 +334,7 @@ def render(
         output_path=output,
         width_mm=width * 25.4,
         height_mm=height * 25.4,
+        enrichment=enrichment,
     )
 
     # ------------------------------------------------------------------
