@@ -335,6 +335,7 @@ def render(
         width_mm=width * 25.4,
         height_mm=height * 25.4,
         enrichment=enrichment,
+        transformer=transformer,
     )
 
     # ------------------------------------------------------------------

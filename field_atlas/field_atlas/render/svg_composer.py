@@ -14,7 +14,154 @@ from typing import TYPE_CHECKING, Callable
 import svgwrite
 
 if TYPE_CHECKING:
+    import pyproj
     from field_atlas.enrichment.models import EnrichmentData
+
+
+# ---------------------------------------------------------------------------
+# Feature label style constants
+# ---------------------------------------------------------------------------
+
+_PEAK_COLOR   = "#3A3A3A"
+_WATER_COLOR  = "#7BA7BC"
+_OTHER_COLOR  = "#888888"
+_FONT_MM_STD  = 2.12     # ≈ 6pt
+_FONT_MM_SML  = 1.76     # ≈ 5pt
+_CHAR_W_FACTOR = 0.58    # estimated rendered char width / font_size
+_MARKER_GAP   = 1.0      # mm gap between marker right edge and label text
+_WATER_TYPES  = frozenset({"water", "pond", "reservoir"})
+
+
+def _feature_style(ftype: str) -> dict:
+    """Return marker and text style attrs for a given feature type."""
+    if ftype == "peak":
+        return {"marker": "triangle", "color": _PEAK_COLOR, "font_mm": _FONT_MM_STD}
+    if ftype in _WATER_TYPES:
+        return {"marker": "circle", "color": _WATER_COLOR, "font_mm": _FONT_MM_STD, "italic": True}
+    if ftype == "viewpoint":
+        return {"marker": "diamond", "color": _PEAK_COLOR, "font_mm": _FONT_MM_STD}
+    return {"marker": "none", "color": _OTHER_COLOR, "font_mm": _FONT_MM_SML}
+
+
+def _add_feature_marker(
+    g: svgwrite.container.Group,
+    dwg: svgwrite.Drawing,
+    ftype: str,
+    sx: float,
+    sy: float,
+) -> float:
+    """Draw the marker glyph at (sx, sy) and return the x offset for the label.
+
+    (sx, sy) is the vertical centre of the marker.  Returns the horizontal
+    distance from sx to where the label text should begin.
+    """
+    if ftype == "peak":
+        # Solid upward-pointing triangle, 2 mm tall × 2 mm wide.
+        pts = [(sx, sy - 1.0), (sx - 1.0, sy + 1.0), (sx + 1.0, sy + 1.0)]
+        g.add(dwg.polygon(pts, fill=_PEAK_COLOR, stroke="none"))
+        return 1.0 + _MARKER_GAP
+    if ftype in _WATER_TYPES:
+        # Filled circle, r = 0.75 mm.
+        g.add(dwg.circle(center=(sx, sy), r=0.75, fill=_WATER_COLOR, stroke="none"))
+        return 0.75 + _MARKER_GAP
+    if ftype == "viewpoint":
+        # Filled diamond, 0.9 mm half-diagonal.
+        r = 0.9
+        pts = [(sx, sy - r), (sx + r, sy), (sx, sy + r), (sx - r, sy)]
+        g.add(dwg.polygon(pts, fill=_PEAK_COLOR, stroke="none"))
+        return r + _MARKER_GAP
+    return 0.0  # "none" — text only, no horizontal offset needed
+
+
+def _render_feature_labels(
+    dwg: svgwrite.Drawing,
+    enrichment: EnrichmentData,
+    transformer: pyproj.Transformer,
+    proj_to_svg: Callable[[float, float], tuple[float, float]],
+    map_x0: float,
+    map_y0: float,
+    map_x1: float,
+    map_y1: float,
+) -> None:
+    """Project, collide-check, and draw feature markers and labels.
+
+    All features from *enrichment* that fall within the visible map area are
+    labelled.  Simple axis-aligned bounding-box collision avoidance shifts
+    lower-priority labels down by 3 mm when an overlap is detected.
+    """
+    from field_atlas.enrichment.features import rank_features
+
+    if enrichment.features is None:
+        return
+
+    # Rank by type priority (no route points available at render time).
+    ranked = rank_features(enrichment.features, route_points=[], max_labels=8)
+
+    # Project each feature and discard those outside the visible map area.
+    candidates: list[dict] = []
+    for feat in ranked:
+        easting, northing = transformer.transform(feat.lat, feat.lng)
+        sx, sy = proj_to_svg(easting, northing)
+        if map_x0 <= sx <= map_x1 and map_y0 <= sy <= map_y1:
+            candidates.append({"feat": feat, "sx": sx, "sy": sy})
+
+    if not candidates:
+        return
+
+    styles = [_feature_style(c["feat"].feature_type) for c in candidates]
+
+    # ------------------------------------------------------------------ #
+    # Collision avoidance                                                   #
+    # ------------------------------------------------------------------ #
+    # Marker half-widths used for label-start x offset (mirrors _add_feature_marker).
+    _MARKER_HALF_W = {"triangle": 1.0, "circle": 0.75, "diamond": 0.9, "none": 0.0}
+
+    def _label_box(idx: int, y_off: float) -> tuple[float, float, float, float]:
+        """Estimate (x0, y0, x1, y1) of the text label for item at *idx*."""
+        sx = candidates[idx]["sx"]
+        sy = candidates[idx]["sy"] + y_off
+        st = styles[idx]
+        x_off = _MARKER_HALF_W.get(st["marker"], 0.0) + _MARKER_GAP
+        lx = sx + x_off
+        ly = sy - st["font_mm"]
+        w  = len(candidates[idx]["feat"].name) * st["font_mm"] * _CHAR_W_FACTOR
+        return (lx, ly, lx + w, ly + st["font_mm"] * 1.3)
+
+    def _overlaps(a: tuple, b: tuple) -> bool:
+        return not (a[2] < b[0] or b[2] < a[0] or a[3] < b[1] or b[3] < a[1])
+
+    y_offsets = [0.0] * len(candidates)
+    for i in range(1, len(candidates)):
+        for j in range(i):
+            if _overlaps(_label_box(i, y_offsets[i]), _label_box(j, y_offsets[j])):
+                y_offsets[i] += 3.0
+                break  # one adjustment per label; imperfect but good enough
+
+    # ------------------------------------------------------------------ #
+    # Render into a dedicated group                                         #
+    # ------------------------------------------------------------------ #
+    g = dwg.g(id="features")
+    for idx, item in enumerate(candidates):
+        feat = item["feat"]
+        sx   = item["sx"]
+        sy   = item["sy"] + y_offsets[idx]
+        st   = styles[idx]
+
+        x_off = _add_feature_marker(g, dwg, feat.feature_type, sx, sy)
+
+        txt_attrs: dict = {
+            "font_family": "Arial, Helvetica, sans-serif",
+            "font_size":   st["font_mm"],
+            "fill":        st["color"],
+        }
+        if st.get("italic"):
+            txt_attrs["font_style"] = "italic"
+
+        # Text baseline sits 0.4 mm below marker vertical centre — a neutral
+        # position that reads clearly alongside all three marker shapes.
+        g.add(dwg.text(feat.name, insert=(sx + x_off, sy + 0.4), **txt_attrs))
+
+    dwg.add(g)
 
 
 # ---------------------------------------------------------------------------
@@ -89,6 +236,7 @@ def render_terrain_svg(
     height_mm: float = 609.6,
     margin_mm: float = 25.4,
     enrichment: EnrichmentData | None = None,
+    transformer: pyproj.Transformer | None = None,
 ) -> str:
     """Render contour lines and a hiking route as a print-ready SVG.
 
@@ -232,6 +380,18 @@ def render_terrain_svg(
             stroke="white",
             stroke_width=0.4,
         ))
+
+    # ------------------------------------------------------------------
+    # 5. Feature labels
+    # ------------------------------------------------------------------
+    if enrichment is not None and transformer is not None:
+        _render_feature_labels(
+            dwg, enrichment, transformer, proj_to_svg,
+            map_x0=offset_x,
+            map_y0=offset_y,
+            map_x1=offset_x + map_w_mm,
+            map_y1=offset_y + map_h_mm,
+        )
 
     dwg.save()
     return str(out.resolve())
