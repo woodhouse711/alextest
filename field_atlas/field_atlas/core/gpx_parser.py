@@ -102,7 +102,7 @@ def parse_gpx(filepath: str) -> TrackData:
     with path.open("r", encoding="utf-8") as fh:
         gpx = gpxpy.parse(fh)
 
-    # --- collect raw points --------------------------------------------------
+    # --- collect raw points (tracks first, fall back to routes) --------------
     points: list[dict] = []
     for track in gpx.tracks:
         for segment in track.segments:
@@ -117,14 +117,27 @@ def parse_gpx(filepath: str) -> TrackData:
                 )
 
     if not points:
-        raise ValueError(f"No trackpoints found in {filepath}")
+        for route in gpx.routes:
+            for pt in route.points:
+                points.append(
+                    {
+                        "lat": pt.latitude,
+                        "lng": pt.longitude,
+                        "elevation": pt.elevation,
+                        "time": pt.time,
+                    }
+                )
 
-    # --- track name ----------------------------------------------------------
-    track_name = (
-        gpx.tracks[0].name
-        if gpx.tracks and gpx.tracks[0].name
-        else path.stem
-    )
+    if not points:
+        raise ValueError(f"No trackpoints or route points found in {filepath}")
+
+    # --- track/route name ----------------------------------------------------
+    track_name = None
+    if gpx.tracks and gpx.tracks[0].name:
+        track_name = gpx.tracks[0].name
+    elif gpx.routes and gpx.routes[0].name:
+        track_name = gpx.routes[0].name
+    track_name = track_name or path.stem
 
     # --- bounding box --------------------------------------------------------
     lats = [p["lat"] for p in points]
@@ -246,15 +259,25 @@ def padded_bounds(track: TrackData, padding_pct: float = 0.2) -> dict:
 
 if __name__ == "__main__":
     if len(sys.argv) != 2:
-        print("Usage: python -m field_atlas.core.gpx_parser <file.gpx>")
+        print("Usage: python -m field_atlas.core.gpx_parser <file.gpx|directory>")
         sys.exit(1)
 
-    track = parse_gpx(sys.argv[1])
-    print(track)
-    print()
-    pb = padded_bounds(track)
-    print(
-        f"Padded bounds (20 %):\n"
-        f"  lat [{pb['min_lat']:.5f}, {pb['max_lat']:.5f}]\n"
-        f"  lng [{pb['min_lng']:.5f}, {pb['max_lng']:.5f}]"
-    )
+    target = Path(sys.argv[1])
+    gpx_files = sorted(target.glob("*.gpx")) if target.is_dir() else [target]
+
+    if not gpx_files:
+        print(f"No .gpx files found in {target}")
+        sys.exit(1)
+
+    for gpx_file in gpx_files:
+        print(f"=== {gpx_file} ===")
+        track = parse_gpx(str(gpx_file))
+        print(track)
+        print()
+        pb = padded_bounds(track)
+        print(
+            f"Padded bounds (20 %):\n"
+            f"  lat [{pb['min_lat']:.5f}, {pb['max_lat']:.5f}]\n"
+            f"  lng [{pb['min_lng']:.5f}, {pb['max_lng']:.5f}]"
+        )
+        print()
