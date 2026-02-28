@@ -221,13 +221,17 @@ def get_elevation_at_point(
 if __name__ == "__main__":
     import tempfile
 
-    # Middlesex Fells Reservation, MA — same area as sample.gpx
+    # Rocky Mountain National Park, CO — representative high-elevation test area
+    # (elevations roughly 1 240 – 4 345 m, giving a meaningful range printout)
     TEST_BOUNDS = {
-        "min_lat": 42.401051,
-        "max_lat": 42.468655,
-        "min_lng": -71.126602,
-        "max_lng": -71.102973,
+        "min_lat": 40.30,
+        "max_lat": 40.50,
+        "min_lng": -105.80,
+        "max_lng": -105.50,
     }
+    # Spot-check: Longs Peak summit (4 346 m)
+    SPOT_LAT, SPOT_LNG = 40.2550, -105.6153
+    SPOT_LABEL = "Longs Peak"
 
     print("Fetching DEM from USGS 3DEP …")
     with tempfile.NamedTemporaryFile(suffix=".tif", delete=False) as tmp:
@@ -235,22 +239,22 @@ if __name__ == "__main__":
 
     try:
         fetch_dem(TEST_BOUNDS, tiff_path)
-        print(f"Saved to: {tiff_path}")
 
         elevation, meta = load_dem(tiff_path)
         valid = elevation[~np.isnan(elevation)]
 
-        print(f"Shape      : {meta['shape']}")
-        print(f"CRS        : {meta['crs']}")
-        print(f"Resolution : {meta['resolution'][0]:.6f} x {meta['resolution'][1]:.6f} deg/px")
-        print(f"Min elev   : {valid.min():.2f} m")
-        print(f"Max elev   : {valid.max():.2f} m")
-        print(f"Mean elev  : {valid.mean():.2f} m")
+        rows, cols = meta["shape"]
+        print(f"Elevation grid : ({rows}, {cols}), "
+              f"range: {valid.min():.1f}m to {valid.max():.1f}m")
+        print(f"Mean elevation : {valid.mean():.1f} m")
+        print(f"CRS            : {meta['crs']}")
+        print(f"Resolution     : {meta['resolution'][0]:.6f} x {meta['resolution'][1]:.6f} deg/px")
 
-        # Spot-check Bear Hill Tower (highest point in the area)
-        bear_hill_lat, bear_hill_lng = 42.465687, -71.107360
-        elev = get_elevation_at_point(elevation, meta["transform"], bear_hill_lat, bear_hill_lng)
-        print(f"Bear Hill  : {elev:.2f} m (waypoint says 87.78 m)")
+        try:
+            spot = get_elevation_at_point(elevation, meta["transform"], SPOT_LAT, SPOT_LNG)
+            print(f"{SPOT_LABEL:<15}: {spot:.1f} m")
+        except ValueError as exc:
+            print(f"{SPOT_LABEL} outside raster bounds: {exc}")
 
     except (ValueError, requests.RequestException) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
