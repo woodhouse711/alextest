@@ -1,19 +1,18 @@
 """
 field_atlas/enrichment/features.py
 
-Fetch named geographic features near a location from the OpenStreetMap
-Overpass API (peaks, viewpoints, shelters, water sources, trailheads, etc.)
-and package them into a FeaturesData dataclass.
+Fetch named geographic features near a hiking route from OpenStreetMap via
+the Overpass API.  Features become label candidates on the printed artifact.
 
 API:  https://overpass-api.de/api/interpreter
-No key required; public instance with reasonable rate limits.
+No key required; public instance — be respectful of rate limits.
 """
 
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
 from pathlib import Path
 
 import requests
@@ -26,30 +25,23 @@ import requests
 _OVERPASS_URL = "https://overpass-api.de/api/interpreter"
 _REQUEST_TIMEOUT_S = 45
 
-# Map from (key, value) OSM tag pair → internal feature_type label.
-# Checked in order; first match wins.
-_TAG_TYPE_MAP: list[tuple[tuple[str, str], str]] = [
-    (("natural", "peak"),          "peak"),
-    (("natural", "saddle"),        "saddle"),
-    (("tourism", "viewpoint"),     "viewpoint"),
-    (("man_made", "tower"),        "tower"),
-    (("historic", "tower"),        "tower"),
-    (("amenity", "shelter"),       "shelter"),
-    (("tourism", "wilderness_hut"), "shelter"),
-    (("tourism", "camp_site"),     "campsite"),
-    (("natural", "spring"),        "water"),
-    (("amenity", "drinking_water"), "water"),
-    (("amenity", "fountain"),      "water"),
-    (("amenity", "toilets"),       "toilets"),
-    (("amenity", "parking"),       "parking"),
-    (("highway", "trailhead"),     "trailhead"),
-    (("tourism", "information"),   "information"),
-    (("information", "board"),     "information"),
-    (("information", "map"),       "information"),
-    (("leisure", "picnic_table"),  "picnic"),
-    (("tourism", "picnic_site"),   "picnic"),
-    (("natural", "cave_entrance"), "cave"),
-]
+# Metres within which a feature is considered "near the route".
+_NEAR_ROUTE_M = 500.0
+
+# Base priority score per feature type — lower = higher priority.
+# Used by rank_features(); near-route features are preferred within each band.
+_TYPE_PRIORITY: dict[str, int] = {
+    "peak":       0,
+    "saddle":     1,
+    "water":      2,
+    "pond":       2,
+    "reservoir":  2,
+    "viewpoint":  3,
+    "cliff":      4,
+    "trail":      5,
+    "shelter":    6,
+    "parking":    7,
+}
 
 
 # ---------------------------------------------------------------------------
@@ -58,60 +50,69 @@ _TAG_TYPE_MAP: list[tuple[tuple[str, str], str]] = [
 
 
 @dataclass
-class Feature:
-    """A single geographic point-of-interest from OpenStreetMap."""
+class MapFeature:
+    """A single named geographic feature from OpenStreetMap."""
 
-    osm_id: int
-    osm_type: str          # "node", "way", or "relation"
-    feature_type: str      # normalised type label, e.g. "peak", "viewpoint"
-    name: str | None       # from OSM "name" tag, or None
-    latitude: float        # centroid latitude (degrees)
-    longitude: float       # centroid longitude (degrees)
+    name: str
+    feature_type: str   # one of: peak, water, trail, shelter, parking,
+                        #         viewpoint, saddle, cliff, pond, reservoir
+    lat: float          # WGS-84 decimal degrees
+    lng: float
     elevation_m: float | None  # from OSM "ele" tag, or None
-    tags: dict             # raw OSM tag dict for further inspection
+    osm_id: int
 
 
 @dataclass
-class FeaturesData:
-    """Collection of geographic features near a query location."""
+class FeatureSet:
+    """Collection of named geographic features within a query bounding box."""
 
-    latitude: float        # query centre
-    longitude: float
-    radius_m: float        # search radius used
-    query_date: str        # YYYY-MM-DD (local date when query was made)
-    fetched_at: str        # ISO 8601 UTC timestamp
-    features: list[Feature] = field(default_factory=list)
+    bounds: dict        # {"min_lat": …, "max_lat": …, "min_lng": …, "max_lng": …}
+    features: list[MapFeature] = field(default_factory=list)
 
-    # Convenience groupings (populated by _group_features after fetch)
-    peaks: list[Feature] = field(default_factory=list)
-    viewpoints: list[Feature] = field(default_factory=list)
-    towers: list[Feature] = field(default_factory=list)
-    shelters: list[Feature] = field(default_factory=list)
-    water_sources: list[Feature] = field(default_factory=list)
-    parking: list[Feature] = field(default_factory=list)
-    trailheads: list[Feature] = field(default_factory=list)
-    other: list[Feature] = field(default_factory=list)
+    # Filtered convenience views — populated automatically after construction.
+    peaks: list[MapFeature] = field(default_factory=list)
+    water_features: list[MapFeature] = field(default_factory=list)
+    trails: list[MapFeature] = field(default_factory=list)
 
     def __str__(self) -> str:
         lines = [
-            f"FeaturesData  ({self.latitude:.4f}, {self.longitude:.4f})"
-            f"  r={self.radius_m:.0f}m  {self.query_date}",
-            f"  {len(self.features)} features total:",
-            f"    peaks      : {len(self.peaks)}",
-            f"    viewpoints : {len(self.viewpoints)}",
-            f"    towers     : {len(self.towers)}",
-            f"    shelters   : {len(self.shelters)}",
-            f"    water      : {len(self.water_sources)}",
-            f"    parking    : {len(self.parking)}",
-            f"    trailheads : {len(self.trailheads)}",
-            f"    other      : {len(self.other)}",
+            f"FeatureSet  bounds={self.bounds}",
+            f"  {len(self.features)} named features total:",
+            f"    peaks          : {len(self.peaks)}",
+            f"    water features : {len(self.water_features)}",
+            f"    trails         : {len(self.trails)}",
+            f"    other          : {len(self.features) - len(self.peaks) - len(self.water_features) - len(self.trails)}",
         ]
-        # Show named items in each priority category
-        for feat in (self.peaks + self.viewpoints + self.towers):
-            name = feat.name or "(unnamed)"
+        for feat in self.peaks + self.water_features:
             elev = f"  {feat.elevation_m:.0f}m" if feat.elevation_m is not None else ""
-            lines.append(f"    [{feat.feature_type}] {name}{elev}")
+            lines.append(f"    [{feat.feature_type:10s}] {feat.name}{elev}")
         return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Overpass query
+# ---------------------------------------------------------------------------
+
+# Template — {{bbox}} is replaced with south,west,north,east (Overpass convention).
+_QUERY_TEMPLATE = """\
+[out:json][timeout:30];
+(
+  node["natural"="peak"]({{bbox}});
+  node["natural"="saddle"]({{bbox}});
+  node["natural"="cliff"]({{bbox}});
+  node["natural"="water"]({{bbox}});
+  way["natural"="water"]({{bbox}});
+  node["water"="pond"]({{bbox}});
+  node["water"="reservoir"]({{bbox}});
+  way["water"="pond"]({{bbox}});
+  way["water"="reservoir"]({{bbox}});
+  node["tourism"="viewpoint"]({{bbox}});
+  node["amenity"="shelter"]({{bbox}});
+  node["amenity"="parking"]({{bbox}});
+  way["highway"="path"]["name"]({{bbox}});
+  way["highway"="track"]["name"]({{bbox}});
+);
+out center tags;"""
 
 
 # ---------------------------------------------------------------------------
@@ -119,157 +120,138 @@ class FeaturesData:
 # ---------------------------------------------------------------------------
 
 
-def _classify_tags(tags: dict) -> str:
-    """Return a normalised feature_type string from raw OSM tags."""
-    for (key, value), label in _TAG_TYPE_MAP:
-        if tags.get(key) == value:
-            return label
-    return "other"
+def _build_query(bounds: dict) -> str:
+    """Substitute bounding box into the Overpass QL template.
+
+    Overpass uses south,west,north,east order.
+    """
+    bbox = (
+        f"{bounds['min_lat']},{bounds['min_lng']},"
+        f"{bounds['max_lat']},{bounds['max_lng']}"
+    )
+    return _QUERY_TEMPLATE.replace("{{bbox}}", bbox)
+
+
+def _classify_tags(tags: dict) -> str | None:
+    """Return a feature_type string from OSM tags, or None to skip the element."""
+    nat     = tags.get("natural")
+    water   = tags.get("water")
+    tourism = tags.get("tourism")
+    amenity = tags.get("amenity")
+    highway = tags.get("highway")
+
+    if nat == "peak":               return "peak"
+    if nat == "saddle":             return "saddle"
+    if nat == "cliff":              return "cliff"
+    if nat == "water":
+        # Refine if a water sub-type tag is present
+        if water == "pond":         return "pond"
+        if water == "reservoir":    return "reservoir"
+        return "water"
+    if water == "pond":             return "pond"
+    if water == "reservoir":        return "reservoir"
+    if tourism == "viewpoint":      return "viewpoint"
+    if amenity == "shelter":        return "shelter"
+    if amenity == "parking":        return "parking"
+    if highway in ("path", "track"): return "trail"
+    return None
 
 
 def _parse_elevation(tags: dict) -> float | None:
-    """Extract a numeric elevation from OSM 'ele' tag, or return None."""
     raw = tags.get("ele")
     if raw is None:
         return None
     try:
-        return float(str(raw).strip().split()[0])  # handle "145 m" or "145.3"
+        return float(str(raw).strip().split()[0])
     except (ValueError, IndexError):
         return None
 
 
-def _element_to_feature(el: dict) -> Feature | None:
-    """Convert one Overpass JSON element dict to a Feature, or None if unusable."""
-    osm_type = el.get("type", "")
-    osm_id = el.get("id", 0)
+def _element_to_feature(el: dict) -> MapFeature | None:
+    """Convert one Overpass JSON element to a MapFeature, or None to skip."""
     tags = el.get("tags", {})
 
-    # Determine centroid lat/lng
+    # Require a human-readable name.
+    name = tags.get("name") or tags.get("name:en")
+    if not name:
+        return None
+
+    feature_type = _classify_tags(tags)
+    if feature_type is None:
+        return None
+
+    osm_type = el.get("type", "node")
+    osm_id   = el.get("id", 0)
+
     if osm_type == "node":
         lat = el.get("lat")
         lng = el.get("lon")
     else:
-        # For ways/relations Overpass returns center when requested
-        centre = el.get("center", {})
-        lat = centre.get("lat")
-        lng = centre.get("lon")
+        # Ways/relations: Overpass returns "center" when requested with "out center"
+        center = el.get("center", {})
+        lat = center.get("lat")
+        lng = center.get("lon")
 
     if lat is None or lng is None:
         return None
 
-    feature_type = _classify_tags(tags)
-    name = tags.get("name") or tags.get("name:en") or None
-    elevation_m = _parse_elevation(tags)
-
-    return Feature(
-        osm_id=osm_id,
-        osm_type=osm_type,
+    return MapFeature(
+        name=str(name),
         feature_type=feature_type,
-        name=name,
-        latitude=float(lat),
-        longitude=float(lng),
-        elevation_m=elevation_m,
-        tags=tags,
+        lat=float(lat),
+        lng=float(lng),
+        elevation_m=_parse_elevation(tags),
+        osm_id=int(osm_id),
     )
 
 
-def _group_features(fd: FeaturesData) -> None:
-    """Populate the convenience category lists from fd.features (in place)."""
-    bucket_map: dict[str, list[Feature]] = {
-        "peak":      fd.peaks,
-        "saddle":    fd.peaks,
-        "viewpoint": fd.viewpoints,
-        "tower":     fd.towers,
-        "shelter":   fd.shelters,
-        "campsite":  fd.shelters,
-        "water":     fd.water_sources,
-        "toilets":   fd.other,
-        "parking":   fd.parking,
-        "trailhead": fd.trailheads,
-        "information": fd.other,
-        "picnic":    fd.other,
-        "cave":      fd.other,
-        "other":     fd.other,
-    }
-    for feat in fd.features:
-        bucket = bucket_map.get(feat.feature_type, fd.other)
-        bucket.append(feat)
-
-
-def _build_overpass_query(lat: float, lng: float, radius_m: float) -> str:
-    """Construct an Overpass QL query that fetches all relevant node/way types
-    within *radius_m* metres of (*lat*, *lng*)."""
-    r = int(radius_m)
-    node_filters = " ".join([
-        'node["natural"~"^(peak|saddle|spring|cave_entrance)$"]',
-        'node["tourism"~"^(viewpoint|information|camp_site|picnic_site|wilderness_hut)$"]',
-        'node["amenity"~"^(shelter|drinking_water|fountain|toilets|parking)$"]',
-        'node["man_made"="tower"]',
-        'node["historic"="tower"]',
-        'node["highway"="trailhead"]',
-        'node["information"~"^(board|map)$"]',
-        'node["leisure"="picnic_table"]',
-    ])
-    way_filters = " ".join([
-        'way["tourism"~"^(viewpoint|camp_site|picnic_site)$"]',
-        'way["amenity"~"^(shelter|parking)$"]',
-        'way["man_made"="tower"]',
-    ])
-
-    lines = [
-        "[out:json][timeout:40];",
-        f"(  // within {r}m of ({lat}, {lng})",
-    ]
-    for f in node_filters.split("node"):
-        if f.strip():
-            lines.append(f'  node{f.strip()}(around:{r},{lat},{lng});')
-    for f in way_filters.split("way"):
-        if f.strip():
-            lines.append(f'  way{f.strip()}(around:{r},{lat},{lng});')
-    lines += [
-        ");",
-        "out center tags;",
-    ]
-    return "\n".join(lines)
+def _populate_groups(fs: FeatureSet) -> None:
+    """Fill the peaks / water_features / trails convenience lists in place."""
+    _WATER_TYPES = {"water", "pond", "reservoir"}
+    for feat in fs.features:
+        if feat.feature_type == "peak" or feat.feature_type == "saddle":
+            fs.peaks.append(feat)
+        elif feat.feature_type in _WATER_TYPES:
+            fs.water_features.append(feat)
+        elif feat.feature_type == "trail":
+            fs.trails.append(feat)
 
 
 # ---------------------------------------------------------------------------
-# Public API
+# Public API — fetch
 # ---------------------------------------------------------------------------
 
 
 def fetch_features(
-    lat: float,
-    lng: float,
-    radius_m: float = 3000.0,
-    date: str | None = None,
-) -> FeaturesData:
-    """Fetch geographic features from the OpenStreetMap Overpass API.
+    bounds: dict,
+    route_points: list[dict] | None = None,
+) -> FeatureSet:
+    """Fetch named geographic features from the Overpass API.
 
     Parameters
     ----------
-    lat, lng     : decimal degrees (WGS-84) — query centre
-    radius_m     : search radius in metres (default 3 km)
-    date         : YYYY-MM-DD label for the returned FeaturesData;
-                   defaults to today's UTC date
+    bounds:
+        Dict with keys ``min_lat``, ``max_lat``, ``min_lng``, ``max_lng``
+        (WGS-84 degrees).  Typically the padded route bounding box.
+    route_points:
+        Optional list of ``{"lat": …, "lng": …}`` dicts representing the
+        hiking route.  Accepted here for interface consistency; use
+        :func:`rank_features` to apply proximity-based ranking afterwards.
 
     Returns
     -------
-    FeaturesData
-        Populated dataclass with features grouped by type.
+    FeatureSet
+        All named features within *bounds*, deduplicated by name, with
+        convenience group lists populated.
 
     Raises
     ------
     requests.RequestException
         On any network-level failure.
     RuntimeError
-        If the Overpass API returns an error response.
+        If the Overpass API returns an unexpected response.
     """
-    if date is None:
-        date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-
-    fetched_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    query = _build_overpass_query(lat, lng, radius_m)
+    query = _build_query(bounds)
 
     try:
         resp = requests.post(
@@ -292,52 +274,127 @@ def fetch_features(
 
     if "elements" not in payload:
         raise RuntimeError(
-            f"Unexpected Overpass response (no 'elements' key): "
-            f"{str(payload)[:200]}"
+            f"Unexpected Overpass response (no 'elements' key): {str(payload)[:200]}"
         )
 
-    features: list[Feature] = []
+    seen_names: set[str] = set()
+    features: list[MapFeature] = []
     for el in payload["elements"]:
         feat = _element_to_feature(el)
-        if feat is not None:
-            features.append(feat)
+        if feat is None:
+            continue
+        if feat.name in seen_names:
+            continue            # deduplicate by name — keep first occurrence
+        seen_names.add(feat.name)
+        features.append(feat)
 
-    fd = FeaturesData(
-        latitude=lat,
-        longitude=lng,
-        radius_m=radius_m,
-        query_date=date,
-        fetched_at=fetched_at,
-        features=features,
-    )
-    _group_features(fd)
-    return fd
+    fs = FeatureSet(bounds=bounds, features=features)
+    _populate_groups(fs)
+    return fs
 
 
-def format_features_line(features: FeaturesData) -> str:
+# ---------------------------------------------------------------------------
+# Public API — ranking
+# ---------------------------------------------------------------------------
+
+
+def _dist_approx_m(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
+    """Fast planar approximation of distance between two WGS-84 points (metres)."""
+    mid_lat_rad = math.radians((lat1 + lat2) / 2.0)
+    dlat = (lat2 - lat1) * 111_320.0
+    dlng = (lng2 - lng1) * 111_320.0 * math.cos(mid_lat_rad)
+    return math.hypot(dlat, dlng)
+
+
+def rank_features(
+    features: FeatureSet,
+    route_points: list[dict],
+    max_labels: int = 8,
+) -> list[MapFeature]:
+    """Rank features by relevance for map labelling and return the top N.
+
+    Priority order
+    --------------
+    * Peaks near the route  (within 500 m of any route point)
+    * Named water features near the route
+    * Viewpoints near the route
+    * Named trails near the route
+    * Shelters (any distance)
+    * Parking (any distance)
+    * Other types fill remaining slots
+
+    Within each priority band, features are sorted by proximity to the nearest
+    route point (closer = higher).
+
+    Parameters
+    ----------
+    features:
+        A :class:`FeatureSet` as returned by :func:`fetch_features`.
+    route_points:
+        List of ``{"lat": …, "lng": …}`` dicts — the hiking route in
+        geographic coordinates.
+    max_labels:
+        Maximum number of features to return.
+
+    Returns
+    -------
+    list[MapFeature]
+        Up to *max_labels* features in descending relevance order.
+    """
+    if not route_points:
+        # No route to compare against — fall back to type-priority order only.
+        sorted_feats = sorted(
+            features.features,
+            key=lambda f: _TYPE_PRIORITY.get(f.feature_type, 8),
+        )
+        return sorted_feats[:max_labels]
+
+    def _nearest_dist(feat: MapFeature) -> float:
+        return min(
+            _dist_approx_m(feat.lat, feat.lng, pt["lat"], pt["lng"])
+            for pt in route_points
+        )
+
+    def _score(feat: MapFeature) -> tuple[int, float]:
+        base = _TYPE_PRIORITY.get(feat.feature_type, 8)
+        dist = _nearest_dist(feat)
+        # Near-route features get even-numbered bands; far ones get odd.
+        band = base * 2 if dist <= _NEAR_ROUTE_M else base * 2 + 1
+        return (band, dist)
+
+    ranked = sorted(features.features, key=_score)
+    return ranked[:max_labels]
+
+
+# ---------------------------------------------------------------------------
+# CLI summary helper
+# ---------------------------------------------------------------------------
+
+
+def format_features_line(features: FeatureSet) -> str:
     """Return a compact one-liner for the map's info block.
 
-    Example: "3 peaks  ·  2 viewpoints  ·  4 water sources"
+    Example: ``2 peaks  ·  3 water features  ·  4 trails``
     """
     parts: list[str] = []
     if features.peaks:
-        label = "peak" if len(features.peaks) == 1 else "peaks"
-        parts.append(f"{len(features.peaks)} {label}")
-    if features.viewpoints:
-        label = "viewpoint" if len(features.viewpoints) == 1 else "viewpoints"
-        parts.append(f"{len(features.viewpoints)} {label}")
-    if features.towers:
-        label = "tower" if len(features.towers) == 1 else "towers"
-        parts.append(f"{len(features.towers)} {label}")
-    if features.water_sources:
-        label = "water source" if len(features.water_sources) == 1 else "water sources"
-        parts.append(f"{len(features.water_sources)} {label}")
-    if features.shelters:
-        label = "shelter" if len(features.shelters) == 1 else "shelters"
-        parts.append(f"{len(features.shelters)} {label}")
-    if not parts:
-        return "No notable features found"
-    return "  ·  ".join(parts)
+        n = len(features.peaks)
+        parts.append(f"{n} {'peak' if n == 1 else 'peaks'}")
+    if features.water_features:
+        n = len(features.water_features)
+        parts.append(f"{n} {'water feature' if n == 1 else 'water features'}")
+    if features.trails:
+        n = len(features.trails)
+        parts.append(f"{n} {'trail' if n == 1 else 'trails'}")
+    n_other = (
+        len(features.features)
+        - len(features.peaks)
+        - len(features.water_features)
+        - len(features.trails)
+    )
+    if n_other:
+        parts.append(f"{n_other} other")
+    return "  ·  ".join(parts) if parts else "No named features found"
 
 
 # ---------------------------------------------------------------------------
@@ -345,31 +402,25 @@ def format_features_line(features: FeaturesData) -> str:
 # ---------------------------------------------------------------------------
 
 
-def save_features_to_file(features: FeaturesData, filepath: str | Path) -> None:
+def save_features_to_file(features: FeatureSet, filepath: str | Path) -> None:
     """Serialise *features* to a JSON file at *filepath*.
 
-    The grouped category lists (peaks, viewpoints, etc.) are excluded from the
-    file — they are re-derived on load to avoid duplication.
-    Parent directories are created automatically.
+    Only the canonical ``bounds`` and ``features`` fields are persisted;
+    the derived group lists (peaks, water_features, trails) are re-built on
+    load to avoid duplication.  Parent directories are created automatically.
     """
     path = Path(filepath)
     path.parent.mkdir(parents=True, exist_ok=True)
-
-    # Only persist the canonical fields, not the derived groupings
     data = {
-        "latitude": features.latitude,
-        "longitude": features.longitude,
-        "radius_m": features.radius_m,
-        "query_date": features.query_date,
-        "fetched_at": features.fetched_at,
+        "bounds": features.bounds,
         "features": [asdict(f) for f in features.features],
     }
     with path.open("w", encoding="utf-8") as fh:
         json.dump(data, fh, indent=2)
 
 
-def load_features_from_file(filepath: str | Path) -> FeaturesData:
-    """Deserialise a :class:`FeaturesData` previously written by
+def load_features_from_file(filepath: str | Path) -> FeatureSet:
+    """Deserialise a :class:`FeatureSet` previously written by
     :func:`save_features_to_file`.
 
     Raises
@@ -377,23 +428,22 @@ def load_features_from_file(filepath: str | Path) -> FeaturesData:
     FileNotFoundError
         If *filepath* does not exist.
     ValueError
-        If the JSON cannot be decoded into a FeaturesData.
+        If the JSON cannot be decoded into a FeatureSet.
     """
     path = Path(filepath)
     with path.open(encoding="utf-8") as fh:
         data = json.load(fh)
     try:
-        raw_features = data.pop("features", [])
-        fd = FeaturesData(
-            **data,
-            features=[Feature(**f) for f in raw_features],
+        fs = FeatureSet(
+            bounds=data["bounds"],
+            features=[MapFeature(**f) for f in data.get("features", [])],
         )
     except (TypeError, KeyError) as exc:
         raise ValueError(
-            f"Could not parse FeaturesData from {filepath}: {exc}"
+            f"Could not parse FeatureSet from {filepath}: {exc}"
         ) from exc
-    _group_features(fd)
-    return fd
+    _populate_groups(fs)
+    return fs
 
 
 # ---------------------------------------------------------------------------
@@ -403,18 +453,39 @@ def load_features_from_file(filepath: str | Path) -> FeaturesData:
 if __name__ == "__main__":
     import sys
 
-    LAT, LNG = 42.4491, -71.1140  # Middlesex Fells, MA
-    RADIUS = 3000.0
-    DATE = "2024-06-15"
+    # Middlesex Fells Reservation, MA — tight bounding box
+    BOUNDS = {
+        "min_lat": 42.420,
+        "max_lat": 42.480,
+        "min_lng": -71.150,
+        "max_lng": -71.080,
+    }
 
-    print(f"Fetching features for Middlesex Fells ({LAT}, {LNG}), r={RADIUS:.0f}m …")
+    print(
+        f"Fetching features for Middlesex Fells "
+        f"({BOUNDS['min_lat']}–{BOUNDS['max_lat']}N, "
+        f"{BOUNDS['min_lng']}–{BOUNDS['max_lng']}E) …"
+    )
     try:
-        features = fetch_features(LAT, LNG, radius_m=RADIUS, date=DATE)
+        fs = fetch_features(BOUNDS)
     except Exception as exc:
         print(f"Error: {exc}", file=sys.stderr)
         sys.exit(1)
 
-    print(features)
+    print(f"\n{len(fs.features)} named features found\n")
+
+    # Group and print by type
+    by_type: dict[str, list[MapFeature]] = {}
+    for feat in fs.features:
+        by_type.setdefault(feat.feature_type, []).append(feat)
+
+    for ftype in sorted(by_type):
+        group = by_type[ftype]
+        print(f"  {ftype} ({len(group)})")
+        for feat in sorted(group, key=lambda f: f.name):
+            elev = f"  {feat.elevation_m:.0f}m" if feat.elevation_m is not None else ""
+            print(f"    {feat.name}{elev}")
+
     print()
     print("Formatted line:")
-    print(" ", format_features_line(features))
+    print(" ", format_features_line(fs))

@@ -23,8 +23,9 @@ from field_atlas.core.gpx_parser import TrackData, padded_bounds, parse_gpx
 from field_atlas.core.projection import get_projection, project_bounds, project_points
 from field_atlas.core.terrain_processor import generate_contours, smooth_elevation
 from field_atlas.enrichment.features import (
-    FeaturesData,
+    FeatureSet,
     fetch_features,
+    format_features_line,
     load_features_from_file,
     save_features_to_file,
 )
@@ -92,12 +93,10 @@ def _load_weather(
 
 
 def _load_features(
-    lat: float,
-    lng: float,
+    bounds: dict,
     date: str,
     features_file: str | None,
-    radius_m: float = 3000.0,
-) -> FeaturesData | None:
+) -> FeatureSet | None:
     """Try to obtain features data in priority order:
     1. Explicit --features-file flag
     2. Live Overpass fetch (auto-saved to cache/ on success)
@@ -118,7 +117,7 @@ def _load_features(
 
     # 2. Live fetch
     try:
-        f = fetch_features(lat, lng, radius_m=radius_m, date=date)
+        f = fetch_features(bounds)
         save_features_to_file(f, cache_path)
         click.echo(f"Features: fetched from Overpass (cached to {cache_path})")
         return f
@@ -273,24 +272,22 @@ def render(
     date = _date_str(track)
 
     # ------------------------------------------------------------------
-    # Step 2: Enrichment data (weather + features) — non-fatal if absent
-    # ------------------------------------------------------------------
-    centroid_lat_early = (track.bounds["min_lat"] + track.bounds["max_lat"]) / 2.0
-    centroid_lng_early = (track.bounds["min_lng"] + track.bounds["max_lng"]) / 2.0
-
-    weather = _load_weather(centroid_lat_early, centroid_lng_early, date, weather_file)
-    features = _load_features(centroid_lat_early, centroid_lng_early, date, features_file)
-
-    # ------------------------------------------------------------------
-    # Step 3: Padded bounding box (WGS84)
+    # Step 2: Padded bounding box (WGS84) — needed by both DEM and features
     # ------------------------------------------------------------------
     bounds = padded_bounds(track, padding_pct=padding)
+
+    centroid_lat = (track.bounds["min_lat"] + track.bounds["max_lat"]) / 2.0
+    centroid_lng = (track.bounds["min_lng"] + track.bounds["max_lng"]) / 2.0
+
+    # ------------------------------------------------------------------
+    # Step 3: Enrichment data (weather + features) — non-fatal if absent
+    # ------------------------------------------------------------------
+    weather = _load_weather(centroid_lat, centroid_lng, date, weather_file)
+    features = _load_features(bounds, date, features_file)
 
     # ------------------------------------------------------------------
     # Step 4: UTM projection from track centroid
     # ------------------------------------------------------------------
-    centroid_lat = centroid_lat_early
-    centroid_lng = centroid_lng_early
     transformer = get_projection(centroid_lat, centroid_lng)
 
     # ------------------------------------------------------------------
@@ -385,7 +382,6 @@ def render(
         click.echo("  Weather:  (not available)")
 
     if features:
-        from field_atlas.enrichment.features import format_features_line
         click.echo(f"  Features: {format_features_line(features)}")
     else:
         click.echo("  Features: (not available)")
