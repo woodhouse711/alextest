@@ -1,0 +1,216 @@
+{
+  "latitude": 42.4491,
+  "longitude": -71.114,
+  "radius_m": 3000.0,
+  "query_date": "2024-06-15",
+  "fetched_at": "2024-06-15T14:00:00Z",
+  "features": [
+    {
+      "osm_id": 358603401,
+      "osm_type": "node",
+      "feature_type": "peak",
+      "name": "Bear Hill",
+      "latitude": 42.4471,
+      "longitude": -71.1072,
+      "elevation_m": 146.0,
+      "tags": {
+        "natural": "peak",
+        "name": "Bear Hill",
+        "ele": "146",
+        "wikidata": "Q4873200"
+      }
+    },
+    {
+      "osm_id": 358603402,
+      "osm_type": "node",
+      "feature_type": "peak",
+      "name": "Wenepoykin Hill",
+      "latitude": 42.4418,
+      "longitude": -71.1134,
+      "elevation_m": 128.0,
+      "tags": {
+        "natural": "peak",
+        "name": "Wenepoykin Hill",
+        "ele": "128"
+      }
+    },
+    {
+      "osm_id": 358603403,
+      "osm_type": "node",
+      "feature_type": "peak",
+      "name": "Black Rock",
+      "latitude": 42.4563,
+      "longitude": -71.1098,
+      "elevation_m": 131.0,
+      "tags": {
+        "natural": "peak",
+        "name": "Black Rock",
+        "ele": "131"
+      }
+    },
+    {
+      "osm_id": 458701201,
+      "osm_type": "node",
+      "feature_type": "tower",
+      "name": "Wright's Tower",
+      "latitude": 42.4474,
+      "longitude": -71.1069,
+      "elevation_m": 146.0,
+      "tags": {
+        "man_made": "tower",
+        "name": "Wright's Tower",
+        "tourism": "attraction",
+        "ele": "146",
+        "description": "Stone observation tower, built 1905, 360\u00b0 views"
+      }
+    },
+    {
+      "osm_id": 458701205,
+      "osm_type": "node",
+      "feature_type": "viewpoint",
+      "name": "Bear Hill Overlook",
+      "latitude": 42.4468,
+      "longitude": -71.1075,
+      "elevation_m": 143.0,
+      "tags": {
+        "tourism": "viewpoint",
+        "name": "Bear Hill Overlook",
+        "ele": "143",
+        "description": "Open ledge with views south toward Boston skyline"
+      }
+    },
+    {
+      "osm_id": 458701206,
+      "osm_type": "node",
+      "feature_type": "viewpoint",
+      "name": "Rock Circuit Ledges",
+      "latitude": 42.4552,
+      "longitude": -71.1156,
+      "elevation_m": 118.0,
+      "tags": {
+        "tourism": "viewpoint",
+        "name": "Rock Circuit Ledges",
+        "ele": "118"
+      }
+    },
+    {
+      "osm_id": 558802301,
+      "osm_type": "node",
+      "feature_type": "water",
+      "name": "Spot Pond Brook Spring",
+      "latitude": 42.4508,
+      "longitude": -71.1221,
+      "elevation_m": null,
+      "tags": {
+        "natural": "spring",
+        "name": "Spot Pond Brook Spring",
+        "drinking_water": "no"
+      }
+    },
+    {
+      "osm_id": 558802302,
+      "osm_type": "node",
+      "feature_type": "water",
+      "name": "Sheepfold Water Fountain",
+      "latitude": 42.4432,
+      "longitude": -71.1008,
+      "elevation_m": null,
+      "tags": {
+        "amenity": "drinking_water",
+        "name": "Sheepfold Water Fountain",
+        "seasonal": "yes",
+        "description": "Seasonal drinking water at Sheepfold parking area"
+      }
+    },
+    {
+      "osm_id": 658903401,
+      "osm_type": "node",
+      "feature_type": "parking",
+      "name": "Sheepfold Parking Area",
+      "latitude": 42.4430,
+      "longitude": -71.1005,
+      "elevation_m": null,
+      "tags": {
+        "amenity": "parking",
+        "name": "Sheepfold Parking Area",
+        "access": "yes",
+        "fee": "no",
+        "capacity": "100"
+      }
+    },
+    {
+      "osm_id": 658903402,
+      "osm_type": "node",
+      "feature_type": "parking",
+      "name": "MWRA South Area Parking",
+      "latitude": 42.4381,
+      "longitude": -71.1143,
+      "elevation_m": null,
+      "tags": {
+        "amenity": "parking",
+        "name": "MWRA South Area Parking",
+        "access": "yes",
+        "fee": "no"
+      }
+    },
+    {
+      "osm_id": 658903403,
+      "osm_type": "node",
+      "feature_type": "parking",
+      "name": "Fellsway West Parking",
+      "latitude": 42.4512,
+      "longitude": -71.1302,
+      "elevation_m": null,
+      "tags": {
+        "amenity": "parking",
+        "name": "Fellsway West Parking",
+        "access": "yes",
+        "fee": "no"
+      }
+    },
+    {
+      "osm_id": 759004501,
+      "osm_type": "node",
+      "feature_type": "information",
+      "name": "Middlesex Fells Trail Map Board",
+      "latitude": 42.4434,
+      "longitude": -71.1009,
+      "elevation_m": null,
+      "tags": {
+        "tourism": "information",
+        "information": "board",
+        "name": "Middlesex Fells Trail Map Board",
+        "operator": "DCR"
+      }
+    },
+    {
+      "osm_id": 759004502,
+      "osm_type": "node",
+      "feature_type": "information",
+      "name": "Bear Hill Trailhead Kiosk",
+      "latitude": 42.4440,
+      "longitude": -71.1052,
+      "elevation_m": null,
+      "tags": {
+        "tourism": "information",
+        "information": "board",
+        "name": "Bear Hill Trailhead Kiosk",
+        "operator": "DCR"
+      }
+    },
+    {
+      "osm_id": 859105601,
+      "osm_type": "node",
+      "feature_type": "shelter",
+      "name": "Rock Circuit Trail Lean-to",
+      "latitude": 42.4571,
+      "longitude": -71.1189,
+      "elevation_m": null,
+      "tags": {
+        "amenity": "shelter",
+        "name": "Rock Circuit Trail Lean-to",
+        "shelter_type": "lean_to"
+      }
+    }
+  ]
+}

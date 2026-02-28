@@ -22,12 +22,120 @@ from field_atlas.core.dem_fetcher import fetch_dem, load_dem
 from field_atlas.core.gpx_parser import TrackData, padded_bounds, parse_gpx
 from field_atlas.core.projection import get_projection, project_bounds, project_points
 from field_atlas.core.terrain_processor import generate_contours, smooth_elevation
+from field_atlas.enrichment.features import (
+    FeaturesData,
+    fetch_features,
+    load_features_from_file,
+    save_features_to_file,
+)
+from field_atlas.enrichment.weather import (
+    WeatherData,
+    fetch_weather,
+    load_weather_from_file,
+    save_weather_to_file,
+)
 from field_atlas.render.svg_composer import render_terrain_svg
+
+# Default cache directory (relative to cwd, mirroring output/)
+_CACHE_DIR = Path("cache")
 
 
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
+
+def _load_weather(
+    lat: float,
+    lng: float,
+    date: str,
+    weather_file: str | None,
+) -> WeatherData | None:
+    """Try to obtain weather data in priority order:
+    1. Explicit --weather-file flag
+    2. Live Open-Meteo fetch (auto-saved to cache/ on success)
+    3. Cached file in cache/
+    Returns None if all sources fail (non-fatal; enrichment is skipped).
+    """
+    cache_path = _CACHE_DIR / f"weather_{date}.json"
+
+    # 1. Explicit file
+    if weather_file:
+        try:
+            w = load_weather_from_file(weather_file)
+            click.echo(f"Weather: loaded from {weather_file}")
+            return w
+        except Exception as exc:
+            click.echo(f"Weather: could not read {weather_file} — {exc}", err=True)
+            return None
+
+    # 2. Live fetch
+    try:
+        w = fetch_weather(lat, lng, date)
+        save_weather_to_file(w, cache_path)
+        click.echo(f"Weather: fetched from Open-Meteo (cached to {cache_path})")
+        return w
+    except Exception as exc:
+        click.echo(f"Weather: API unavailable — {exc}")
+
+    # 3. Cache fallback
+    if cache_path.exists():
+        try:
+            w = load_weather_from_file(cache_path)
+            click.echo(f"Weather: loaded from cache {cache_path}")
+            return w
+        except Exception as exc:
+            click.echo(f"Weather: cache unreadable — {exc}", err=True)
+
+    click.echo("Weather: API unavailable, no cache found — skipping")
+    return None
+
+
+def _load_features(
+    lat: float,
+    lng: float,
+    date: str,
+    features_file: str | None,
+    radius_m: float = 3000.0,
+) -> FeaturesData | None:
+    """Try to obtain features data in priority order:
+    1. Explicit --features-file flag
+    2. Live Overpass fetch (auto-saved to cache/ on success)
+    3. Cached file in cache/
+    Returns None if all sources fail (non-fatal; enrichment is skipped).
+    """
+    cache_path = _CACHE_DIR / f"features_{date}.json"
+
+    # 1. Explicit file
+    if features_file:
+        try:
+            f = load_features_from_file(features_file)
+            click.echo(f"Features: loaded from {features_file}")
+            return f
+        except Exception as exc:
+            click.echo(f"Features: could not read {features_file} — {exc}", err=True)
+            return None
+
+    # 2. Live fetch
+    try:
+        f = fetch_features(lat, lng, radius_m=radius_m, date=date)
+        save_features_to_file(f, cache_path)
+        click.echo(f"Features: fetched from Overpass (cached to {cache_path})")
+        return f
+    except Exception as exc:
+        click.echo(f"Features: API unavailable — {exc}")
+
+    # 3. Cache fallback
+    if cache_path.exists():
+        try:
+            f = load_features_from_file(cache_path)
+            click.echo(f"Features: loaded from cache {cache_path}")
+            return f
+        except Exception as exc:
+            click.echo(f"Features: cache unreadable — {exc}", err=True)
+
+    click.echo("Features: API unavailable, no cache found — skipping")
+    return None
 
 
 def _slugify(name: str) -> str:
@@ -105,6 +213,20 @@ def cli() -> None:
     metavar="PATH",
     help="Use a local GeoTIFF instead of fetching from USGS 3DEP.",
 )
+@click.option(
+    "--weather-file",
+    default=None,
+    type=click.Path(dir_okay=False, readable=True),
+    metavar="PATH",
+    help="Use a local WeatherData JSON instead of fetching from Open-Meteo.",
+)
+@click.option(
+    "--features-file",
+    default=None,
+    type=click.Path(dir_okay=False, readable=True),
+    metavar="PATH",
+    help="Use a local FeaturesData JSON instead of querying Overpass.",
+)
 def render(
     gpx_file: str,
     output: str | None,
@@ -114,6 +236,8 @@ def render(
     width: float,
     height: float,
     dem_file: str | None,
+    weather_file: str | None,
+    features_file: str | None,
 ) -> None:
     """Render a terrain map SVG from GPX_FILE.
 
@@ -146,20 +270,31 @@ def render(
     if output is None:
         output = str(Path("output") / f"{slug}.svg")
 
+    date = _date_str(track)
+
     # ------------------------------------------------------------------
-    # Step 2: Padded bounding box (WGS84)
+    # Step 2: Enrichment data (weather + features) — non-fatal if absent
+    # ------------------------------------------------------------------
+    centroid_lat_early = (track.bounds["min_lat"] + track.bounds["max_lat"]) / 2.0
+    centroid_lng_early = (track.bounds["min_lng"] + track.bounds["max_lng"]) / 2.0
+
+    weather = _load_weather(centroid_lat_early, centroid_lng_early, date, weather_file)
+    features = _load_features(centroid_lat_early, centroid_lng_early, date, features_file)
+
+    # ------------------------------------------------------------------
+    # Step 3: Padded bounding box (WGS84)
     # ------------------------------------------------------------------
     bounds = padded_bounds(track, padding_pct=padding)
 
     # ------------------------------------------------------------------
-    # Step 3: UTM projection from track centroid
+    # Step 4: UTM projection from track centroid
     # ------------------------------------------------------------------
-    centroid_lat = (track.bounds["min_lat"] + track.bounds["max_lat"]) / 2.0
-    centroid_lng = (track.bounds["min_lng"] + track.bounds["max_lng"]) / 2.0
+    centroid_lat = centroid_lat_early
+    centroid_lng = centroid_lng_early
     transformer = get_projection(centroid_lat, centroid_lng)
 
     # ------------------------------------------------------------------
-    # Steps 4–5: Obtain DEM (local file or remote fetch), load, smooth
+    # Steps 5–6: Obtain DEM (local file or remote fetch), load, smooth
     # ------------------------------------------------------------------
     if dem_file:
         click.echo(f"Loading local DEM: {dem_file}")
@@ -185,7 +320,7 @@ def render(
     # ------------------------------------------------------------------
     # Step 6: Generate contour lines
     # ------------------------------------------------------------------
-    click.echo("Generating contours…")
+    click.echo("Generating contours…")  # Step 7
     contours = generate_contours(
         elevation,
         meta["transform"],
@@ -232,7 +367,6 @@ def render(
     # Summary
     # ------------------------------------------------------------------
     n_levels = len(contours)
-    date = _date_str(track)
 
     click.echo("")
     click.echo("✓ Field Atlas — Terrain Composition")
@@ -243,6 +377,19 @@ def render(
         f" | Gain: {track.elevation_gain_m:,.0f}m"
     )
     click.echo(f"  Contours: {n_levels} lines at {contour_interval:.0f}m interval")
+
+    if weather:
+        from field_atlas.enrichment.weather import format_weather_line
+        click.echo(f"  Weather:  {format_weather_line(weather)}")
+    else:
+        click.echo("  Weather:  (not available)")
+
+    if features:
+        from field_atlas.enrichment.features import format_features_line
+        click.echo(f"  Features: {format_features_line(features)}")
+    else:
+        click.echo("  Features: (not available)")
+
     click.echo(f"  Output:   {svg_path}")
 
 

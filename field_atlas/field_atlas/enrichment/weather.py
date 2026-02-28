@@ -11,10 +11,12 @@ No key required; free tier covers archive queries.
 
 from __future__ import annotations
 
+import json
 import sys
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import date as _date
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional
 
 import requests
@@ -338,6 +340,45 @@ def format_weather_line(weather: WeatherData) -> str:
         parts.append(f"{weather.precipitation_mm:.1f}mm precip")
 
     return "  ·  ".join(parts)
+
+
+# ---------------------------------------------------------------------------
+# File I/O — cache / offline fallback
+# ---------------------------------------------------------------------------
+
+
+def save_weather_to_file(weather: WeatherData, filepath: str | Path) -> None:
+    """Serialise *weather* to a JSON file at *filepath*.
+
+    Parent directories are created automatically.  Overwrites any existing
+    file at that path.
+    """
+    path = Path(filepath)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as fh:
+        json.dump(asdict(weather), fh, indent=2)
+
+
+def load_weather_from_file(filepath: str | Path) -> WeatherData:
+    """Deserialise a :class:`WeatherData` previously written by
+    :func:`save_weather_to_file`.
+
+    Raises
+    ------
+    FileNotFoundError
+        If *filepath* does not exist.
+    ValueError
+        If the JSON is present but cannot be decoded into a WeatherData.
+    """
+    path = Path(filepath)
+    with path.open(encoding="utf-8") as fh:
+        data = json.load(fh)
+    try:
+        return WeatherData(**data)
+    except (TypeError, KeyError) as exc:
+        raise ValueError(
+            f"Could not parse WeatherData from {filepath}: {exc}"
+        ) from exc
 
 
 # ---------------------------------------------------------------------------
