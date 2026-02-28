@@ -160,7 +160,12 @@ def render_terrain_svg(
     )
 
     # ------------------------------------------------------------------
-    # 3. Contour lines
+    # 3. White background
+    # ------------------------------------------------------------------
+    dwg.add(dwg.rect(insert=(0, 0), size=(width_mm, height_mm), fill="white"))
+
+    # ------------------------------------------------------------------
+    # 4. Contour lines
     # ------------------------------------------------------------------
     interval_m = _infer_interval(contours)
     index_interval = interval_m * 5.0  # e.g. 100 m when interval is 20 m
