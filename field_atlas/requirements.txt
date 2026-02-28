@@ -1,0 +1,9 @@
+gpxpy
+rasterio
+numpy
+scipy
+svgwrite
+pyproj
+requests
+matplotlib
+click
