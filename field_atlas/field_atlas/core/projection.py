@@ -55,7 +55,8 @@ def get_projection(lat: float, lng: float) -> pyproj.Transformer:
     -------
     pyproj.Transformer
         Ready-to-use transformer; call ``transformer.transform(lat, lng)``
-        to obtain ``(easting, northing)`` in metres.
+        to obtain ``(easting, northing)`` in metres.  The output axis order
+        follows the EPSG:326XX definition (Easting first, Northing second).
     """
     zone = auto_utm_zone(lat, lng)
     epsg = 32600 + zone if lat >= 0 else 32700 + zone
@@ -84,9 +85,10 @@ def project_points(
         The same list with ``'x'`` and ``'y'`` added to every element.
     """
     for pt in points:
-        # Transformer was created with always_xy=False, so the axis order
-        # matches the CRS definition: (latitude, longitude) -> (northing, easting).
-        northing, easting = transformer.transform(pt["lat"], pt["lng"])
+        # With always_xy=False the output axis order follows the target CRS
+        # definition.  EPSG:326XX (UTM) defines axes as (Easting, Northing),
+        # so transform(lat, lng) → (easting, northing).
+        easting, northing = transformer.transform(pt["lat"], pt["lng"])
         pt["x"] = easting
         pt["y"] = northing
     return points
@@ -119,9 +121,9 @@ def project_bounds(bounds: dict, transformer: pyproj.Transformer) -> dict:
         (bounds["max_lat"], bounds["max_lng"]),
     ]
     projected = [transformer.transform(lat, lng) for lat, lng in corners]
-    # transform returns (northing, easting) given always_xy=False
-    northings = [p[0] for p in projected]
-    eastings  = [p[1] for p in projected]
+    # EPSG:326XX axis order is (Easting, Northing), so p[0]=easting, p[1]=northing.
+    eastings  = [p[0] for p in projected]
+    northings = [p[1] for p in projected]
     return {
         "min_x": min(eastings),
         "max_x": max(eastings),

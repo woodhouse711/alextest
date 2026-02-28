@@ -98,6 +98,13 @@ def cli() -> None:
     metavar="INCHES",
     help="Print canvas height.",
 )
+@click.option(
+    "--dem-file",
+    default=None,
+    type=click.Path(exists=True, dir_okay=False, readable=True),
+    metavar="PATH",
+    help="Use a local GeoTIFF instead of fetching from USGS 3DEP.",
+)
 def render(
     gpx_file: str,
     output: str | None,
@@ -106,6 +113,7 @@ def render(
     padding: float,
     width: float,
     height: float,
+    dem_file: str | None,
 ) -> None:
     """Render a terrain map SVG from GPX_FILE.
 
@@ -151,20 +159,26 @@ def render(
     transformer = get_projection(centroid_lat, centroid_lng)
 
     # ------------------------------------------------------------------
-    # Steps 4–5: Fetch DEM, load into numpy, smooth
-    # The TemporaryDirectory is released after the raster is loaded into
-    # memory — the Affine transform and numpy array outlive the file.
+    # Steps 4–5: Obtain DEM (local file or remote fetch), load, smooth
     # ------------------------------------------------------------------
-    click.echo("Fetching elevation data…")
-    try:
-        with tempfile.TemporaryDirectory(prefix="field_atlas_") as tmp_dir:
-            dem_path = str(Path(tmp_dir) / "dem.tif")
-            fetch_dem(bounds, dem_path, resolution=resolution)
-            elevation, meta = load_dem(dem_path)
-            # Both objects are now fully in memory; the temp file can go.
-    except Exception as exc:
-        click.echo(f"Error: DEM fetch failed — {exc}", err=True)
-        sys.exit(1)
+    if dem_file:
+        click.echo(f"Loading local DEM: {dem_file}")
+        try:
+            elevation, meta = load_dem(dem_file)
+        except Exception as exc:
+            click.echo(f"Error: Could not load DEM file — {exc}", err=True)
+            sys.exit(1)
+    else:
+        click.echo("Fetching elevation data…")
+        try:
+            with tempfile.TemporaryDirectory(prefix="field_atlas_") as tmp_dir:
+                dem_path = str(Path(tmp_dir) / "dem.tif")
+                fetch_dem(bounds, dem_path, resolution=resolution)
+                elevation, meta = load_dem(dem_path)
+                # Both objects are now fully in memory; the temp file can go.
+        except Exception as exc:
+            click.echo(f"Error: DEM fetch failed — {exc}", err=True)
+            sys.exit(1)
 
     elevation = smooth_elevation(elevation, sigma=0.8)
 
@@ -183,6 +197,23 @@ def render(
     # ------------------------------------------------------------------
     route_points = project_points(track.points, transformer)
     projected_bounds = project_bounds(bounds, transformer)
+
+    # Project contour paths from the DEM's CRS (WGS84 degrees) to UTM metres
+    # so they share the same coordinate system as the route and bounds.
+    # Each path point is [lng, lat] (x=east, y=north in geographic convention).
+    for contour in contours:
+        projected_paths = []
+        for path in contour["paths"]:
+            if not path:
+                continue
+            lats = [xy[1] for xy in path]
+            lngs = [xy[0] for xy in path]
+            # EPSG:326XX axis order: (Easting, Northing)
+            eastings, northings = transformer.transform(lats, lngs)
+            projected_paths.append(
+                [[float(e), float(n)] for e, n in zip(eastings, northings)]
+            )
+        contour["paths"] = projected_paths
 
     # ------------------------------------------------------------------
     # Step 8: Render SVG
