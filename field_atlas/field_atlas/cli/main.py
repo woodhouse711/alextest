@@ -26,6 +26,11 @@ from field_atlas.core.projection import get_projection, project_bounds, project_
 from field_atlas.core.terrain_processor import generate_contours, generate_hillshade
 from field_atlas.enrichment.features import load_features_from_file
 from field_atlas.enrichment.models import EnrichmentData, derive_location_name, enrich, format_info_block
+from field_atlas.enrichment.osm_vectors import (
+    fetch_osm_vectors,
+    load_osm_vectors_from_file,
+    save_osm_vectors_to_file,
+)
 from field_atlas.enrichment.weather import load_weather_from_file
 from field_atlas.render.svg_composer import render_terrain_svg
 
@@ -184,6 +189,13 @@ def cli() -> None:
     help="Use a local FeaturesData JSON instead of querying Overpass.",
 )
 @click.option(
+    "--vectors-file",
+    default=None,
+    type=click.Path(dir_okay=False, readable=True),
+    metavar="PATH",
+    help="Use a local OSMVectors JSON instead of querying Overpass.",
+)
+@click.option(
     "--date",
     default=None,
     metavar="YYYY-MM-DD",
@@ -209,6 +221,7 @@ def render(
     dem_file: str | None,
     weather_file: str | None,
     features_file: str | None,
+    vectors_file: str | None,
     date: str | None,
     notes: str | None,
 ) -> None:
@@ -272,6 +285,32 @@ def render(
             features_file=features_file,
             track_name=track.name,
         )
+
+    # ------------------------------------------------------------------
+    # Step 3b: OSM vector layers — roads, waterways, water areas, trails
+    #   Independent of --date; fetched for every render.
+    #   Falls back gracefully to None so the map renders terrain-only.
+    # ------------------------------------------------------------------
+    from field_atlas.enrichment.osm_vectors import OSMVectors
+    osm_vectors: OSMVectors | None = None
+    if vectors_file:
+        try:
+            osm_vectors = load_osm_vectors_from_file(vectors_file)
+            click.echo(f"  Vectors: loaded from {vectors_file}")
+        except Exception as exc:
+            click.echo(f"  Vectors: could not read {vectors_file} — {exc}", err=True)
+    else:
+        click.echo("Fetching OSM vectors…")
+        try:
+            osm_vectors = fetch_osm_vectors(bounds)
+            cache_path = _CACHE_DIR / f"vectors_{slug}.json"
+            save_osm_vectors_to_file(osm_vectors, cache_path)
+            n_roads   = len(osm_vectors.roads)
+            n_water   = len(osm_vectors.waterways) + len(osm_vectors.water_areas)
+            n_trails  = len(osm_vectors.trails)
+            click.echo(f"  Vectors: {n_roads} roads, {n_water} water features, {n_trails} trails")
+        except Exception as exc:
+            click.echo(f"  Vectors: fetch failed ({exc}) — rendering without vector layers")
 
     # ------------------------------------------------------------------
     # Step 4: UTM projection from track centroid
@@ -354,6 +393,7 @@ def render(
         centroid_lat=centroid_lat,
         centroid_lng=centroid_lng,
         duration_hours=track.duration_hours,
+        osm_vectors=osm_vectors,
     )
 
     # ------------------------------------------------------------------

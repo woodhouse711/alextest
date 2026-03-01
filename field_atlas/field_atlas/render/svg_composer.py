@@ -16,6 +16,7 @@ import svgwrite
 if TYPE_CHECKING:
     import pyproj
     from field_atlas.enrichment.models import EnrichmentData
+    from field_atlas.enrichment.osm_vectors import OSMVectors
 
 
 # ---------------------------------------------------------------------------
@@ -176,6 +177,141 @@ def _render_feature_labels(
         g.add(dwg.text(feat.name, insert=(sx + x_off, sy + 0.4), **txt_attrs))
 
     dwg.add(g)
+
+
+# ---------------------------------------------------------------------------
+# OSM vector style constants
+# ---------------------------------------------------------------------------
+
+_ROAD_MAJOR  = frozenset({"motorway", "trunk", "primary", "secondary"})
+_ROAD_MINOR  = frozenset({"tertiary", "residential", "unclassified"})
+_WATER_FILL  = "#D4E8F0"
+_WATERWAY_COLOR = "#7BA7BC"
+_TRAIL_COLOR    = "#BBBBBB"
+
+
+def _road_style(value: str) -> tuple[float, str] | None:
+    """Return (stroke_width_mm, stroke_color) for a road, or None to skip."""
+    if value in _ROAD_MAJOR:
+        return (0.6, "#B8B8B8")
+    if value in _ROAD_MINOR:
+        return (0.35, "#CCCCCC")
+    return None
+
+
+def _project_osm_pt(
+    lat: float,
+    lng: float,
+    transformer,
+    proj_to_svg,
+) -> tuple[float, float]:
+    """Project a single WGS-84 point to SVG mm coordinates."""
+    easting, northing = transformer.transform(lat, lng)
+    return proj_to_svg(easting, northing)
+
+
+def _project_osm_geom(
+    geometry: list[list[float]],
+    transformer,
+    proj_to_svg,
+) -> list[tuple[float, float]]:
+    """Project a list of [[lat, lng], …] to SVG mm coordinates."""
+    return [_project_osm_pt(pt[0], pt[1], transformer, proj_to_svg) for pt in geometry]
+
+
+def _render_osm_lower_layers(
+    dwg: "svgwrite.Drawing",
+    vectors: "OSMVectors",
+    transformer,
+    proj_to_svg,
+    clip_id: str = "map-area",
+) -> None:
+    """Draw water areas, waterways, and roads into the drawing.
+
+    Layer order within this function (bottom to top):
+      1. Water areas — filled pale-blue polygons
+      2. Waterways  — blue-gray stroked lines
+      3. Roads      — gray stroked lines
+
+    All three groups are clipped to *clip_id* so they cannot bleed into the
+    title margin, then added directly to *dwg* below the contour group.
+    """
+    clip = f"url(#{clip_id})"
+
+    # 1. Water areas (filled polygons) ------------------------------------
+    g_wa = dwg.g(id="water-areas", clip_path=clip)
+    for polygon in vectors.water_areas:
+        pts = _project_osm_geom(polygon, transformer, proj_to_svg)
+        if len(pts) >= 3:
+            g_wa.add(dwg.polygon(pts, fill=_WATER_FILL, stroke="none"))
+    dwg.add(g_wa)
+
+    # 2. Waterways (blue-gray lines) ---------------------------------------
+    g_ww = dwg.g(id="waterways", clip_path=clip)
+    for way in vectors.waterways:
+        pts = _project_osm_geom(way.geometry, transformer, proj_to_svg)
+        if len(pts) < 2:
+            continue
+        sw = 0.5 if way.value == "river" else 0.2
+        g_ww.add(dwg.polyline(
+            pts,
+            stroke=_WATERWAY_COLOR,
+            stroke_width=sw,
+            fill="none",
+            stroke_linecap="round",
+            stroke_linejoin="round",
+        ))
+    dwg.add(g_ww)
+
+    # 3. Roads (gray lines) ------------------------------------------------
+    g_roads = dwg.g(id="roads", clip_path=clip)
+    for way in vectors.roads:
+        style = _road_style(way.value)
+        if style is None:
+            continue
+        sw, color = style
+        pts = _project_osm_geom(way.geometry, transformer, proj_to_svg)
+        if len(pts) < 2:
+            continue
+        g_roads.add(dwg.polyline(
+            pts,
+            stroke=color,
+            stroke_width=sw,
+            fill="none",
+            stroke_linecap="round",
+            stroke_linejoin="round",
+        ))
+    dwg.add(g_roads)
+
+
+def _render_osm_trails(
+    dwg: "svgwrite.Drawing",
+    vectors: "OSMVectors",
+    transformer,
+    proj_to_svg,
+    clip_id: str = "map-area",
+) -> None:
+    """Draw the broader trail network as dashed gray lines.
+
+    Renders above contours but below the user's specific route, so the GPX
+    route remains visually dominant.
+    """
+    g_trails = dwg.g(id="trail-network", clip_path=f"url(#{clip_id})")
+    for way in vectors.trails:
+        pts = _project_osm_geom(way.geometry, transformer, proj_to_svg)
+        if len(pts) < 2:
+            continue
+        line = dwg.polyline(
+            pts,
+            stroke=_TRAIL_COLOR,
+            stroke_width=0.2,
+            fill="none",
+            stroke_linecap="round",
+            stroke_linejoin="round",
+        )
+        line["stroke-dasharray"] = "2,1"
+        g_trails.add(line)
+    dwg.add(g_trails)
 
 
 # ---------------------------------------------------------------------------
@@ -593,6 +729,7 @@ def render_terrain_svg(
     centroid_lng: float = 0.0,
     duration_hours: float | None = None,
     bottom_margin_mm: float = 88.9,
+    osm_vectors: OSMVectors | None = None,
 ) -> str:
     """Render contour lines and a hiking route as a print-ready SVG.
 
@@ -684,8 +821,22 @@ def render_terrain_svg(
         insert=(0, 0), size=(width_mm, height_mm), fill="white", stroke="none",
     ))
 
+    # Define a clip path that constrains all map content to the map rectangle.
+    # This prevents vector lines from bleeding into the title margin.
+    from svgwrite.masking import ClipPath as _ClipPath
+    _clip = dwg.defs.add(_ClipPath(id="map-area"))
+    _clip.add(dwg.rect(insert=(offset_x, offset_y), size=(map_w_mm, map_h_mm)))
+
     # ------------------------------------------------------------------
-    # 4. Contour lines — three-tier visual hierarchy
+    # 4. OSM lower layers: water areas, waterways, roads
+    #    Rendered above hillshade (implicit in contour shading) and below
+    #    contour lines so topography remains the primary visual layer.
+    # ------------------------------------------------------------------
+    if osm_vectors is not None and transformer is not None:
+        _render_osm_lower_layers(dwg, osm_vectors, transformer, proj_to_svg, clip_id="map-area")
+
+    # ------------------------------------------------------------------
+    # 5. Contour lines — three-tier visual hierarchy
     # ------------------------------------------------------------------
     import math as _cmath
 
@@ -804,7 +955,13 @@ def render_terrain_svg(
     dwg.add(g_contours)
 
     # ------------------------------------------------------------------
-    # 5. Route polyline
+    # 6. OSM trail network — dashed gray, above contours, below route
+    # ------------------------------------------------------------------
+    if osm_vectors is not None and transformer is not None:
+        _render_osm_trails(dwg, osm_vectors, transformer, proj_to_svg, clip_id="map-area")
+
+    # ------------------------------------------------------------------
+    # 7. Route polyline
     # ------------------------------------------------------------------
     import math as _math
 
