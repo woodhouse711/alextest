@@ -502,6 +502,74 @@ def _catmull_rom_path(pts: list[tuple[float, float]], tension: float = _SPLINE_T
     return " ".join(parts)
 
 
+def _resample_route_spline(
+    svg_pts: list[tuple[float, float]],
+    pt_norms: list[float],
+    n_out: int = 600,
+) -> tuple[list[tuple[float, float]], list[float]]:
+    """Resample a route to *n_out* uniformly-spaced points via CubicSpline.
+
+    Fits independent ``scipy.interpolate.CubicSpline`` curves to x, y, and
+    the normalised speed values, each parameterised by cumulative arc length
+    normalised to [0, 1].  Resampling at uniform arc-length intervals removes
+    the GPS point-density variation (dense near stoplights, sparse on straight
+    fire roads) so the final curve has a steady, river-like quality — no
+    bunching or angular stepping.
+
+    Returns
+    -------
+    (resampled_pts, resampled_norms)
+        ``resampled_pts`` — list of *n_out* (x, y) tuples in SVG mm coords.
+        ``resampled_norms`` — list of *n_out* speed values clamped to [0, 1].
+    """
+    import numpy as _np
+    from scipy.interpolate import CubicSpline as _CubicSpline
+
+    pts = _np.array(svg_pts, dtype=float)
+    n = len(pts)
+
+    if n < 4:
+        return svg_pts, pt_norms
+
+    # Arc-length parameterisation — each GPS point gets a t ∈ [0, 1].
+    diffs = _np.diff(pts, axis=0)
+    seg_lens = _np.hypot(diffs[:, 0], diffs[:, 1])
+    cumlen = _np.concatenate([[0.0], _np.cumsum(seg_lens)])
+    total = float(cumlen[-1])
+
+    if total < 1e-6:
+        return svg_pts, pt_norms
+
+    t = cumlen / total
+
+    # Deduplicate: CubicSpline requires strictly increasing t values.
+    # Duplicate GPS coordinates (parked, GPS drift) must be collapsed.
+    _keep = [0]
+    for _k in range(1, n):
+        if t[_k] > t[_keep[-1]] + 1e-9:
+            _keep.append(_k)
+    if len(_keep) < 4:
+        return svg_pts, pt_norms
+    t = t[_keep]
+    pts = pts[_keep]
+    svals = _np.array([pt_norms[_k] for _k in _keep], dtype=float)
+
+    # Fit splines for x, y, and speed.
+    cs_x = _CubicSpline(t, pts[:, 0])
+    cs_y = _CubicSpline(t, pts[:, 1])
+    cs_s = _CubicSpline(t, svals)
+
+    # Uniform resample.
+    t_out = _np.linspace(0.0, 1.0, n_out)
+    x_out = cs_x(t_out)
+    y_out = cs_y(t_out)
+    s_out = _np.clip(cs_s(t_out), 0.0, 1.0)
+
+    new_pts = [(float(x), float(y)) for x, y in zip(x_out, y_out)]
+    new_norms = [float(s) for s in s_out]
+    return new_pts, new_norms
+
+
 def _draw_wind_indicator(
     dwg: "svgwrite.Drawing",
     weather: "WeatherData",
@@ -1042,9 +1110,39 @@ def render_terrain_svg(
 
             _palette = get_palette(route_palette)
 
+            # --- Build per-point normalised speed values --------------------
+            # _norm is per-segment (len = n_pts - 1); average adjacent segs
+            # to get per-point values, then apply a rolling average (window=5)
+            # to damp GPS jitter before passing to the spline.
+            _n_pts = len(route_pts)
+            _pt_norms_raw: list[float] = [_norm[0]]
+            for _pi in range(1, _n_pts - 1):
+                _pt_norms_raw.append((_norm[_pi - 1] + _norm[_pi]) / 2.0)
+            _pt_norms_raw.append(_norm[-1])
+
+            _W = 5   # rolling-average window
+            _pt_norms: list[float] = []
+            for _pi in range(_n_pts):
+                _lo = max(0, _pi - _W // 2)
+                _hi = min(_n_pts, _pi + _W // 2 + 1)
+                _pt_norms.append(sum(_pt_norms_raw[_lo:_hi]) / (_hi - _lo))
+
+            # --- Arc-length CubicSpline resampling --------------------------
+            # Resample the raw GPS points onto a uniform arc-length grid so
+            # the final curve has steady density regardless of GPS sampling
+            # rate.  600 points gives ~3 m between consecutive resampled pts
+            # on a 1.9 km route — dense enough for a perfectly smooth stroke.
+            _RESAMPLE_N = 600
+            _smooth_pts, _smooth_norms = _resample_route_spline(
+                route_pts, _pt_norms, _RESAMPLE_N
+            )
+            _smooth_colors = [interpolate_color(v, _palette) for v in _smooth_norms]
+
             # Pass 1 — white casing: single smooth Bézier path.
+            # _catmull_rom_path produces cubic Bézier C commands through the
+            # resampled points (already dense, so curves are essentially arcs).
             g_route.add(dwg.path(
-                d=_catmull_rom_path(route_pts),
+                d=_catmull_rom_path(_smooth_pts),
                 stroke="#FFFFFF",
                 stroke_width=_casing_w,
                 fill="none",
@@ -1052,80 +1150,46 @@ def render_terrain_svg(
                 stroke_linecap="round",
             ))
 
-            # Pass 2 — single smooth Bézier path with one continuous gradient.
+            # Pass 2 — per-segment along-path gradients.
             #
-            # Strategy: build per-point speed colors and cumulative-distance
-            # offsets, then create ONE linearGradient with a stop per point
-            # (sampled to ≤ 500 stops for very dense tracks).  The gradient
-            # direction follows the route's bounding-box diagonal so the color
-            # sweep reads roughly left-to-right / start-to-end.  SVG gradients
-            # are linear in screen space, not along-path, but with enough stops
-            # the route reads as one seamless calligraphic stroke.
-
-            # Per-point speed: average adjacent segment speeds at interior pts.
-            _n_pts = len(route_pts)
-            _point_norms: list[float] = []
-            for _pi in range(_n_pts):
-                if _pi == 0:
-                    _point_norms.append(_norm[0])
-                elif _pi == _n_pts - 1:
-                    _point_norms.append(_norm[-1])
-                else:
-                    _point_norms.append((_norm[_pi - 1] + _norm[_pi]) / 2.0)
-
-            _point_colors = [interpolate_color(v, _palette) for v in _point_norms]
-
-            # Cumulative arc-length offsets (0.0 → 1.0).
-            _cum = [0.0]
-            for _pi in range(1, _n_pts):
-                dx = route_pts[_pi][0] - route_pts[_pi - 1][0]
-                dy = route_pts[_pi][1] - route_pts[_pi - 1][1]
-                _cum.append(_cum[-1] + _math.hypot(dx, dy))
-            _total = _cum[-1] or 1.0
-            _offsets = [c / _total for c in _cum]
-
-            # Sample indices (preserve first and last; at most 500 stops).
-            _MAX_STOPS = 500
-            if _n_pts <= _MAX_STOPS:
-                _stop_idx = list(range(_n_pts))
-            else:
-                _step = (_n_pts - 1) / (_MAX_STOPS - 1)
-                _stop_idx = [int(round(i * _step)) for i in range(_MAX_STOPS)]
-                _stop_idx[0] = 0
-                _stop_idx[-1] = _n_pts - 1
-
-            # Bounding-box diagonal as gradient direction (userSpaceOnUse).
-            _xs = [p[0] for p in route_pts]
-            _ys = [p[1] for p in route_pts]
-            _gx1, _gy1 = min(_xs), min(_ys)
-            _gx2, _gy2 = max(_xs), max(_ys)
-            # Guard against degenerate zero-length gradient vector.
-            if abs(_gx2 - _gx1) < 0.01 and abs(_gy2 - _gy1) < 0.01:
-                _gx2 += 0.01
-
-            _route_grad = dwg.defs.add(dwg.linearGradient(
-                id="route-speed-grad",
-                gradientUnits="userSpaceOnUse",
-                x1=f"{_gx1:.4f}", y1=f"{_gy1:.4f}",
-                x2=f"{_gx2:.4f}", y2=f"{_gy2:.4f}",
-            ))
-            _prev_offset = -1.0
-            for _si in _stop_idx:
-                _off = round(_offsets[_si], 6)
-                if _off <= _prev_offset:
-                    _off = _prev_offset + 1e-6  # ensure monotone stops
-                _route_grad.add_stop_color(_off, _point_colors[_si])
-                _prev_offset = _off
-
+            # Each short segment A→B gets its own linearGradient that runs
+            # exactly from A to B (gradientUnits="userSpaceOnUse").  The
+            # gradient is therefore perpendicular to the segment at every
+            # cross-section — colour flows along the path, not across some
+            # fixed screen-space diagonal.  With round linecaps, adjacent
+            # segments blend seamlessly at their shared endpoints.
             g_segs = dwg.g(id="route-speed", clip_path="url(#map-area)")
-            g_segs.add(dwg.path(
-                d=_catmull_rom_path(route_pts),
-                stroke="url(#route-speed-grad)",
-                stroke_width=_core_w,
-                stroke_linecap="round",
-                stroke_linejoin="round",
-                fill="none",
-            ))
+            _n_smooth = len(_smooth_pts)
+            for _i in range(_n_smooth - 1):
+                _p0 = _smooth_pts[_i]
+                _p1 = _smooth_pts[_i + 1]
+                _c0 = _smooth_colors[_i]
+                _c1 = _smooth_colors[_i + 1]
+
+                # Skip degenerate zero-length segments (shouldn't occur after
+                # deduplication in the resampler, but guard defensively).
+                _dx = _p1[0] - _p0[0]
+                _dy = _p1[1] - _p0[1]
+                if _dx * _dx + _dy * _dy < 1e-10:
+                    continue
+
+                _grad = dwg.defs.add(dwg.linearGradient(
+                    id=f"rg-{_i}",
+                    gradientUnits="userSpaceOnUse",
+                    x1=f"{_p0[0]:.4f}", y1=f"{_p0[1]:.4f}",
+                    x2=f"{_p1[0]:.4f}", y2=f"{_p1[1]:.4f}",
+                ))
+                _grad.add_stop_color(0,   _c0)
+                _grad.add_stop_color(1.0, _c1)
+
+                g_segs.add(dwg.path(
+                    d=f"M {_p0[0]:.4f},{_p0[1]:.4f} L {_p1[0]:.4f},{_p1[1]:.4f}",
+                    stroke=f"url(#rg-{_i})",
+                    stroke_width=_core_w,
+                    stroke_linecap="round",
+                    stroke_linejoin="round",
+                    fill="none",
+                ))
             g_route.add(g_segs)
 
         else:
