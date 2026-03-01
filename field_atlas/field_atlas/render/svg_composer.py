@@ -728,14 +728,15 @@ def render_terrain_svg(
                 continue
 
             # Douglas-Peucker in UTM metres before projecting.
-            # Tolerance = 3 m: removes marching-squares micro-smoothing
-            # (gentle curve points that deviate < 3 m from the straight
-            # chord between neighbours) while preserving ridgeline V-apexes
-            # and valley bends whose perpendicular deviation is typically
-            # 5–20 m at 10 m DEM scale.  0.5 m was too fine — it kept
-            # nearly every smooth-curve point and paths looked soft.
+            # Tolerance = 0.5 m: removes only sub-pixel staircase jitter
+            # introduced by marching-squares boundary crossing (which places
+            # points at fractional pixel positions).  All real terrain
+            # inflections — ridgeline V-apexes, valley bends — have
+            # perpendicular deviations >> 0.5 m and are fully preserved.
+            # Keeping the full density of retained points is what gives the
+            # path its geological texture and nuance.
             utm_pts = [(float(xy[0]), float(xy[1])) for xy in path]
-            utm_pts = _douglas_peucker(utm_pts, tolerance=3.0)
+            utm_pts = _douglas_peucker(utm_pts, tolerance=0.5)
             if len(utm_pts) < 2:
                 continue
 
