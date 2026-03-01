@@ -1222,30 +1222,24 @@ def render_terrain_svg(
 
         sx, sy = proj_to_svg(route_pts_proj[0][0], route_pts_proj[0][1])
 
-        # Start marker — filled forest-green circle, 2 mm diameter (r=1.0).
+        # Start marker — white circle with black outline, r=3.0 mm.
         g_route.add(dwg.circle(
             center=(sx, sy),
-            r=1.0,
-            fill="#3D8B37",
-            stroke="white",
-            stroke_width=0.3,
+            r=3.0,
+            fill="#FFFFFF",
+            stroke="#000000",
+            stroke_width=0.45,
         ))
 
         if not is_loop:
             ex, ey = proj_to_svg(route_pts_proj[-1][0], route_pts_proj[-1][1])
-            # End marker — surveyor's benchmark: open ring + centre dot.
-            g_route.add(dwg.circle(    # outer ring, 2.5 mm diameter (r=1.25)
+            # End marker — same style as start.
+            g_route.add(dwg.circle(
                 center=(ex, ey),
-                r=1.25,
-                fill="none",
-                stroke="#2E75B6",
-                stroke_width=0.5,
-            ))
-            g_route.add(dwg.circle(    # centre dot, 0.8 mm diameter (r=0.4)
-                center=(ex, ey),
-                r=0.4,
-                fill="#2E75B6",
-                stroke="none",
+                r=3.0,
+                fill="#FFFFFF",
+                stroke="#000000",
+                stroke_width=0.45,
             ))
 
         dwg.add(g_route)
