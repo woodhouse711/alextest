@@ -7,3 +7,4 @@ pyproj
 requests
 matplotlib
 click
+cairosvg

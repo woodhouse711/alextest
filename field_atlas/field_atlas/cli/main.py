@@ -15,6 +15,7 @@ from __future__ import annotations
 import re
 import sys
 import tempfile
+from datetime import datetime
 from pathlib import Path
 
 import click
@@ -342,6 +343,20 @@ def render(
     )
 
     # ------------------------------------------------------------------
+    # Step 10: Timestamped PNG preview (committed archive in docs/preview/)
+    # ------------------------------------------------------------------
+    import cairosvg
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    preview_dir = Path("docs") / "preview"
+    preview_dir.mkdir(parents=True, exist_ok=True)
+    png_path = str(preview_dir / f"{slug}_{ts}.png")
+    try:
+        # 960 px wide → 1280 px tall for an 18×24 canvas; compact for GitHub.
+        cairosvg.svg2png(url=svg_path, write_to=png_path, output_width=960)
+    except Exception as exc:
+        png_path = f"(failed — {exc})"
+
+    # ------------------------------------------------------------------
     # Summary
     # ------------------------------------------------------------------
     n_levels = len(contours)
@@ -380,6 +395,7 @@ def render(
 
     click.echo(f"  Contours: {n_levels} lines at {contour_interval:.0f}m interval")
     click.echo(f"  Output:   {svg_path}")
+    click.echo(f"  Preview:  {png_path}")
 
 
 # ---------------------------------------------------------------------------
