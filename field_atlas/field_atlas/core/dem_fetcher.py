@@ -35,7 +35,7 @@ _REQUEST_TIMEOUT_S = 60
 def fetch_dem(
     bounds: dict,
     output_path: str,
-    resolution: int = 256,
+    resolution: int = 1024,
 ) -> str:
     """Download a 3DEP elevation GeoTIFF for the given WGS84 bounding box.
 
@@ -47,7 +47,10 @@ def fetch_dem(
     output_path:
         File path where the downloaded GeoTIFF will be saved.
     resolution:
-        Pixel width *and* height of the requested image.  Defaults to 256.
+        Pixel width *and* height of the requested image.  Defaults to 1024.
+        Higher values (1024, 2048) produce sharper contours at the cost of
+        longer fetch and processing times.  2048 is the maximum the USGS
+        3DEP ImageServer supports in a single request.
 
     Returns
     -------

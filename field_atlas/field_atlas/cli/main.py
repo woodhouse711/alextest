@@ -125,10 +125,14 @@ def cli() -> None:
 )
 @click.option(
     "--resolution",
-    default=512,
+    default=1024,
     show_default=True,
     metavar="PIXELS",
-    help="DEM pixel resolution (width = height).",
+    help=(
+        "DEM pixel resolution (width = height).  Higher values (1024, 2048) "
+        "produce better contour detail but take longer to fetch and process.  "
+        "2048 is the maximum the USGS 3DEP API supports in a single request."
+    ),
 )
 @click.option(
     "--contour-interval",
