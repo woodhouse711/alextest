@@ -25,7 +25,7 @@ from field_atlas.core.gpx_parser import TrackData, padded_bounds, parse_gpx
 from field_atlas.core.projection import get_projection, project_bounds, project_points
 from field_atlas.core.terrain_processor import generate_contours, generate_hillshade, smooth_elevation
 from field_atlas.enrichment.features import load_features_from_file
-from field_atlas.enrichment.models import EnrichmentData, enrich, format_info_block
+from field_atlas.enrichment.models import EnrichmentData, derive_location_name, enrich, format_info_block
 from field_atlas.enrichment.weather import load_weather_from_file
 from field_atlas.render.svg_composer import render_terrain_svg
 
@@ -95,6 +95,8 @@ def _run_enrichment(
         try:
             enrichment.features = load_features_from_file(features_file)
             click.echo(f"  Features: loaded from {features_file}")
+            # Re-derive location name now that features are available.
+            enrichment.location_name = derive_location_name(track_name, enrichment.features)
         except Exception as exc:
             click.echo(
                 f"  Features: could not read {features_file} — {exc}", err=True

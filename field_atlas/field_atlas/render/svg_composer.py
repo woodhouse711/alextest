@@ -669,6 +669,8 @@ def render_terrain_svg(
         """True if *elev* is an integer multiple of *step* (float-safe)."""
         return step > 0 and abs(round(elev / step) * step - elev) < 0.1
 
+    g_contours = dwg.g(id="contours")
+
     for contour in contours:
         elev = contour["elevation"]
 
@@ -712,14 +714,18 @@ def render_terrain_svg(
                 if hs > 0.6:
                     pl["stroke"] = "#DCDCDC"
 
-            dwg.add(pl)
+            g_contours.add(pl)
+
+    dwg.add(g_contours)
 
     # ------------------------------------------------------------------
-    # 4. Route polyline
+    # 5. Route polyline
     # ------------------------------------------------------------------
     import math as _math
 
     if len(route_points) >= 2:
+        g_route = dwg.g(id="route")
+
         route_pts_proj = [(pt["x"], pt["y"]) for pt in route_points]
         route_pts = [proj_to_svg(x, y) for x, y in route_pts_proj]
 
@@ -729,7 +735,7 @@ def render_terrain_svg(
             route_pts = _catmull_rom_smooth(route_pts)
 
         # Pass 1 — white casing: makes the route pop off dense contours.
-        dwg.add(dwg.polyline(
+        g_route.add(dwg.polyline(
             route_pts,
             stroke="#FFFFFF",
             stroke_width=1.5,
@@ -738,7 +744,7 @@ def render_terrain_svg(
             stroke_linecap="round",
         ))
         # Pass 2 — blue route on top.
-        dwg.add(dwg.polyline(
+        g_route.add(dwg.polyline(
             route_pts,
             stroke="#2E75B6",
             stroke_width=0.9,
@@ -754,7 +760,7 @@ def render_terrain_svg(
         sx, sy = proj_to_svg(route_pts_proj[0][0], route_pts_proj[0][1])
 
         # Start marker — filled forest-green circle, 2 mm diameter (r=1.0).
-        dwg.add(dwg.circle(
+        g_route.add(dwg.circle(
             center=(sx, sy),
             r=1.0,
             fill="#3D8B37",
@@ -765,19 +771,21 @@ def render_terrain_svg(
         if not is_loop:
             ex, ey = proj_to_svg(route_pts_proj[-1][0], route_pts_proj[-1][1])
             # End marker — surveyor's benchmark: open ring + centre dot.
-            dwg.add(dwg.circle(        # outer ring, 2.5 mm diameter (r=1.25)
+            g_route.add(dwg.circle(    # outer ring, 2.5 mm diameter (r=1.25)
                 center=(ex, ey),
                 r=1.25,
                 fill="none",
                 stroke="#2E75B6",
                 stroke_width=0.5,
             ))
-            dwg.add(dwg.circle(        # centre dot, 0.8 mm diameter (r=0.4)
+            g_route.add(dwg.circle(    # centre dot, 0.8 mm diameter (r=0.4)
                 center=(ex, ey),
                 r=0.4,
                 fill="#2E75B6",
                 stroke="none",
             ))
+
+        dwg.add(g_route)
 
     # ------------------------------------------------------------------
     # 5. Feature labels
