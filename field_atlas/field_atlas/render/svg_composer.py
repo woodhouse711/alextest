@@ -308,6 +308,7 @@ def render_terrain_svg(
     centroid_lat: float = 0.0,
     centroid_lng: float = 0.0,
     duration_hours: float | None = None,
+    bottom_margin_mm: float = 88.9,
 ) -> str:
     """Render contour lines and a hiking route as a print-ready SVG.
 
@@ -359,7 +360,7 @@ def render_terrain_svg(
     # 1. Compute scale and centring offsets
     # ------------------------------------------------------------------
     printable_w = width_mm - 2.0 * margin_mm
-    printable_h = height_mm - 2.0 * margin_mm
+    printable_h = height_mm - margin_mm - bottom_margin_mm
 
     proj_w = bounds["max_x"] - bounds["min_x"]
     proj_h = bounds["max_y"] - bounds["min_y"]
@@ -520,6 +521,7 @@ def render_terrain_svg(
         centroid_lng=centroid_lng,
         duration_hours=duration_hours,
         margin_mm=margin_mm,
+        bottom_margin_mm=bottom_margin_mm,
         enrichment=enrichment,
     )
 
@@ -537,6 +539,7 @@ def add_title_block(
     centroid_lng: float = 0.0,
     duration_hours: float | None = None,
     margin_mm: float = 25.4,
+    bottom_margin_mm: float = 88.9,
     enrichment: EnrichmentData | None = None,
 ) -> None:
     """Render a centred typographic information block in the bottom margin.
@@ -579,39 +582,38 @@ def add_title_block(
     width_mm  = _parse_mm(svg_drawing.attribs["width"])
     height_mm = _parse_mm(svg_drawing.attribs["height"])
 
-    # --- Typography: 1 pt = 0.3528 mm ------------------------------------
-    R1_MM = 3.53    # 10 pt — location name
-    R2_MM = 2.82    # 8 pt  — date
-    R4_MM = 2.47    # 7 pt  — stats line
-    R5_MM = 2.29    # 6.5 pt — weather / solar
-    R6_MM = 1.76    # 5 pt  — wordmark
+    # --- Typography: 1 pt = 0.3528 mm (3× scale for legibility) ----------
+    R1_MM = 10.59   # 30 pt — location name
+    R2_MM =  8.46   # 24 pt — date
+    R4_MM =  7.41   # 21 pt — stats line
+    R5_MM =  6.87   # 19.5 pt — weather / solar
+    R6_MM =  5.28   # 15 pt — wordmark
 
     MAIN_COLOR  = "#3A3A3A"
     SOFT_COLOR  = "#666666"
     RULE_COLOR  = "#CCCCCC"
-    RULE_HALF_W = 20.0          # rule extends ±20 mm from centre (40 mm total)
-    RULE_SW     = 0.106         # ≈ 0.3 pt stroke-width in mm
+    RULE_HALF_W = 60.0          # rule extends ±60 mm from centre (120 mm total)
+    RULE_SW     = 0.318         # ≈ 0.9 pt stroke-width in mm
     FONT        = "Arial, Helvetica, sans-serif"
 
-    cx           = width_mm / 2.0           # horizontal centre of canvas
-    margin_top_y = height_mm - margin_mm    # top edge of bottom margin
+    cx           = width_mm / 2.0                  # horizontal centre of canvas
+    margin_top_y = height_mm - bottom_margin_mm    # top edge of title block strip
 
-    # Vertical positions — Row 1 baseline anchored from top of the margin.
-    # PAD_TOP leaves a small gap so the cap-top clears the map boundary.
-    PAD_TOP = 2.5
+    # Vertical positions — Row 1 baseline anchored from top of the strip.
+    PAD_TOP = 7.5
     r1_y   = margin_top_y + PAD_TOP + R1_MM
-    r2_y   = r1_y + 3.0      # Row 1 → Row 2:  3 mm
-    rule_y = r2_y + 4.0      # Row 2 → rule:   4 mm
-    r4_y   = rule_y + 4.0    # rule  → Row 4:  4 mm
+    r2_y   = r1_y +  9.0     # Row 1 → Row 2:  9 mm
+    rule_y = r2_y + 12.0     # Row 2 → rule:  12 mm
+    r4_y   = rule_y + 12.0   # rule  → Row 4: 12 mm
 
     has_row5 = enrichment is not None and (
         enrichment.weather is not None or enrichment.solar is not None
     )
     if has_row5:
-        r5_y = r4_y + 2.5    # Row 4 → Row 5: 2.5 mm
-        r6_y = r5_y + 5.0    # Row 5 → Row 6: 5 mm
+        r5_y = r4_y +  7.5   # Row 4 → Row 5:  7.5 mm
+        r6_y = r5_y + 15.0   # Row 5 → Row 6: 15 mm
     else:
-        r6_y = r4_y + 5.0    # no Row 5 — balanced gap to wordmark
+        r6_y = r4_y + 15.0   # no Row 5 — balanced gap to wordmark
 
     base: dict = {
         "font_family": FONT,
