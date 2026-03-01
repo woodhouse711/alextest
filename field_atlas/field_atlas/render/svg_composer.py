@@ -47,6 +47,25 @@ _CONTOUR_TIERS: dict[str, tuple[str, float]] = {
 _CONTOUR_LABEL_FONT_MM = 1.41   # 4pt
 _CONTOUR_LABEL_CHAR_W  = _CONTOUR_LABEL_FONT_MM * 0.58
 
+# ---------------------------------------------------------------------------
+# Graticule and neatline constants
+# ---------------------------------------------------------------------------
+
+_GRAT_STROKE       = "#E0E0E0"   # lighter than minor contours
+_GRAT_STROKE_W     = 0.10        # mm
+_GRAT_DASHARRAY    = "1.5,3"     # 1.5 mm dash / 3 mm gap
+_GRAT_LABEL_FONT   = 1.41        # 4pt
+_GRAT_LABEL_COLOR  = "#999999"
+_GRAT_LABEL_FONT_F = "Liberation Sans, Arial, Helvetica, sans-serif"
+_GRAT_LABEL_GAP    = 1.0         # mm between label and outer border edge
+_GRAT_N_SAMPLE     = 32          # intermediate points when projecting a grid line
+
+_NL_TOTAL_W = 3.0    # mm — total neatline border width
+_NL_BAND_W  = 1.5    # mm — each of the two bands
+_NL_BLACK   = "#333333"
+_NL_WHITE   = "#FFFFFF"
+_NL_STROKE  = 0.15   # mm — hairline outlines on inner/outer edges
+
 
 def _feature_style(ftype: str) -> dict:
     """Return marker and text style attrs for a given feature type."""
@@ -403,6 +422,411 @@ def _render_wind_streamlines(
                 fill="none",
                 opacity=opacity,
             ))
+
+    dwg.add(g)
+
+
+# ---------------------------------------------------------------------------
+# Graticule and neatline helpers
+# ---------------------------------------------------------------------------
+
+def _compute_wgs84_bounds(
+    transformer: "pyproj.Transformer",
+    bounds_projected: dict,
+) -> tuple[float, float, float, float]:
+    """Recover WGS84 (lat/lng) bounding box from UTM projected bounds.
+
+    Projects all four corners and returns the axis-aligned envelope.
+    """
+    corners = [
+        (bounds_projected["min_x"], bounds_projected["min_y"]),
+        (bounds_projected["max_x"], bounds_projected["min_y"]),
+        (bounds_projected["max_x"], bounds_projected["max_y"]),
+        (bounds_projected["min_x"], bounds_projected["max_y"]),
+    ]
+    wgs = [transformer.transform(x, y, direction="INVERSE") for x, y in corners]
+    lats = [c[0] for c in wgs]
+    lngs = [c[1] for c in wgs]
+    return min(lats), max(lats), min(lngs), max(lngs)
+
+
+def _graticule_interval(
+    min_lat: float, max_lat: float,
+    min_lng: float, max_lng: float,
+) -> tuple[float, float, float]:
+    """Auto-select grid interval targeting 3–6 lines on each axis.
+
+    Returns ``(interval_deg, subdiv_deg, interval_min)`` where
+    *interval_min* is the interval in minutes (float) for label formatting.
+    *subdiv_deg* is 1/5 of the grid interval, used for neatline segments.
+    """
+    max_extent = max(max_lat - min_lat, max_lng - min_lng)
+    if   max_extent > 0.5:  interval_min = 10.0
+    elif max_extent > 0.1:  interval_min = 5.0
+    elif max_extent > 0.05: interval_min = 2.0
+    elif max_extent > 0.01: interval_min = 1.0
+    else:                   interval_min = 0.5   # 30 seconds
+    interval_deg = interval_min / 60.0
+    subdiv_deg   = interval_deg / 5.0
+    return interval_deg, subdiv_deg, interval_min
+
+
+def _gen_values(lo: float, hi: float, step: float) -> list[float]:
+    """Return regularly spaced values from the first multiple of *step* ≥ *lo*
+    up through *hi*."""
+    import math as _m
+    start = _m.ceil(lo / step - 1e-9) * step
+    vals: list[float] = []
+    v = start
+    while v <= hi + 1e-9:
+        vals.append(v)
+        v += step
+    return vals
+
+
+def _project_lat_line(
+    transformer: "pyproj.Transformer",
+    lat_val: float,
+    min_lng: float,
+    max_lng: float,
+    proj_to_svg: "Callable[[float, float], tuple[float, float]]",
+    n: int = _GRAT_N_SAMPLE,
+) -> list[tuple[float, float]]:
+    """Return SVG points tracing the parallel at *lat_val* across the map."""
+    lngs = [min_lng + i * (max_lng - min_lng) / (n - 1) for i in range(n)]
+    return [proj_to_svg(*transformer.transform(lat_val, lng)) for lng in lngs]
+
+
+def _project_lng_line(
+    transformer: "pyproj.Transformer",
+    lng_val: float,
+    min_lat: float,
+    max_lat: float,
+    proj_to_svg: "Callable[[float, float], tuple[float, float]]",
+    n: int = _GRAT_N_SAMPLE,
+) -> list[tuple[float, float]]:
+    """Return SVG points tracing the meridian at *lng_val* across the map."""
+    lats = [min_lat + i * (max_lat - min_lat) / (n - 1) for i in range(n)]
+    return [proj_to_svg(*transformer.transform(lat, lng_val)) for lat in lats]
+
+
+def _cross_horizontal(pts: list[tuple[float, float]], ty: float) -> float | None:
+    """Return the x coordinate where polyline *pts* first crosses y = *ty*."""
+    for k in range(len(pts) - 1):
+        y0, y1 = pts[k][1], pts[k + 1][1]
+        if (y0 - ty) * (y1 - ty) <= 0 and abs(y1 - y0) > 1e-9:
+            t = (ty - y0) / (y1 - y0)
+            return pts[k][0] + t * (pts[k + 1][0] - pts[k][0])
+    return None
+
+
+def _cross_vertical(pts: list[tuple[float, float]], tx: float) -> float | None:
+    """Return the y coordinate where polyline *pts* first crosses x = *tx*."""
+    for k in range(len(pts) - 1):
+        x0, x1 = pts[k][0], pts[k + 1][0]
+        if (x0 - tx) * (x1 - tx) <= 0 and abs(x1 - x0) > 1e-9:
+            t = (tx - x0) / (x1 - x0)
+            return pts[k][1] + t * (pts[k + 1][1] - pts[k][1])
+    return None
+
+
+def _fmt_coord(deg_decimal: float, axis: str, interval_min: float) -> str:
+    """Format a decimal degree value as 42°27′N or 71°07′W.
+
+    When *interval_min* < 1.0 (sub-minute precision) the format includes
+    whole seconds: 42°27′30″N.
+    """
+    is_neg  = deg_decimal < 0
+    abs_d   = abs(deg_decimal)
+    degrees = int(abs_d)
+    tot_min = (abs_d - degrees) * 60.0
+    suffix  = ("N" if not is_neg else "S") if axis == "lat" else ("W" if is_neg else "E")
+
+    if interval_min < 1.0:      # sub-minute: show whole seconds
+        min_int = int(tot_min)
+        secs    = int(round((tot_min - min_int) * 60.0))
+        if secs == 60:
+            min_int += 1; secs = 0
+        return f'{degrees}\u00b0{min_int:02d}\u2032{secs:02d}\u2033{suffix}'
+    else:
+        min_r = int(round(tot_min))
+        if min_r == 60:
+            degrees += 1; min_r = 0
+        return f'{degrees}\u00b0{min_r:02d}\u2032{suffix}'
+
+
+def _render_graticule(
+    dwg: "svgwrite.Drawing",
+    transformer: "pyproj.Transformer",
+    bounds_projected: dict,
+    proj_to_svg: "Callable[[float, float], tuple[float, float]]",
+    offset_x: float,
+    offset_y: float,
+    map_w_mm: float,
+    map_h_mm: float,
+    clip_id: str = "map-area",
+) -> tuple[float, float, float, float, float, float, float]:
+    """Render dashed coordinate grid lines inside the map and labels in the margins.
+
+    Grid lines use the projected WGS84 lat/lng graticule, sampled at 32
+    intermediate points to correctly represent meridian convergence.  Each
+    line is clipped to the map area.  Labels are placed just outside the
+    3 mm neatline border, in the margin area.
+
+    Returns ``(min_lat, max_lat, min_lng, max_lng, interval_deg, subdiv_deg,
+    interval_min)`` for use by :func:`_render_checkered_border`.
+    """
+    min_lat, max_lat, min_lng, max_lng = _compute_wgs84_bounds(
+        transformer, bounds_projected
+    )
+    interval_deg, subdiv_deg, interval_min = _graticule_interval(
+        min_lat, max_lat, min_lng, max_lng
+    )
+
+    lat_vals = _gen_values(min_lat, max_lat, interval_deg)
+    lng_vals = _gen_values(min_lng, max_lng, interval_deg)
+
+    # ------------------------------------------------------------------
+    # Grid lines (clipped to map area)
+    # ------------------------------------------------------------------
+    g = dwg.g(id="graticule", clip_path=f"url(#{clip_id})")
+
+    for lat_val in lat_vals:
+        pts = _project_lat_line(transformer, lat_val, min_lng, max_lng, proj_to_svg)
+        line = dwg.polyline(
+            pts,
+            stroke=_GRAT_STROKE,
+            stroke_width=_GRAT_STROKE_W,
+            fill="none",
+            stroke_linecap="round",
+        )
+        line["stroke-dasharray"] = _GRAT_DASHARRAY
+        g.add(line)
+
+    for lng_val in lng_vals:
+        pts = _project_lng_line(transformer, lng_val, min_lat, max_lat, proj_to_svg)
+        line = dwg.polyline(
+            pts,
+            stroke=_GRAT_STROKE,
+            stroke_width=_GRAT_STROKE_W,
+            fill="none",
+            stroke_linecap="round",
+        )
+        line["stroke-dasharray"] = _GRAT_DASHARRAY
+        g.add(line)
+
+    dwg.add(g)
+
+    # ------------------------------------------------------------------
+    # Margin labels — outside the 3 mm neatline border
+    # ------------------------------------------------------------------
+    BW  = _NL_TOTAL_W
+    GAP = _GRAT_LABEL_GAP
+    right_x = offset_x + map_w_mm
+    bot_y   = offset_y + map_h_mm
+
+    g_lbl = dwg.g(id="graticule-labels")
+    _txt = dict(
+        font_family=_GRAT_LABEL_FONT_F,
+        font_size=_GRAT_LABEL_FONT,
+        fill=_GRAT_LABEL_COLOR,
+    )
+
+    for lat_val in lat_vals:
+        pts = _project_lat_line(transformer, lat_val, min_lng, max_lng, proj_to_svg)
+        lbl = _fmt_coord(lat_val, "lat", interval_min)
+
+        y_left = _cross_vertical(pts, offset_x)
+        if y_left is not None and offset_y <= y_left <= bot_y:
+            g_lbl.add(dwg.text(
+                lbl,
+                insert=(offset_x - BW - GAP, y_left + _GRAT_LABEL_FONT * 0.35),
+                text_anchor="end",
+                **_txt,
+            ))
+
+        y_right = _cross_vertical(pts, right_x)
+        if y_right is not None and offset_y <= y_right <= bot_y:
+            g_lbl.add(dwg.text(
+                lbl,
+                insert=(right_x + BW + GAP, y_right + _GRAT_LABEL_FONT * 0.35),
+                text_anchor="start",
+                **_txt,
+            ))
+
+    for lng_val in lng_vals:
+        pts = _project_lng_line(transformer, lng_val, min_lat, max_lat, proj_to_svg)
+        lbl = _fmt_coord(lng_val, "lng", interval_min)
+
+        x_top = _cross_horizontal(pts, offset_y)
+        if x_top is not None and offset_x <= x_top <= right_x:
+            g_lbl.add(dwg.text(
+                lbl,
+                insert=(x_top, offset_y - BW - GAP),
+                text_anchor="middle",
+                **_txt,
+            ))
+
+        x_bot = _cross_horizontal(pts, bot_y)
+        if x_bot is not None and offset_x <= x_bot <= right_x:
+            g_lbl.add(dwg.text(
+                lbl,
+                insert=(x_bot, bot_y + BW + GAP + _GRAT_LABEL_FONT),
+                text_anchor="middle",
+                **_txt,
+            ))
+
+    dwg.add(g_lbl)
+
+    return min_lat, max_lat, min_lng, max_lng, interval_deg, subdiv_deg, interval_min
+
+
+def _render_checkered_border(
+    dwg: "svgwrite.Drawing",
+    transformer: "pyproj.Transformer",
+    proj_to_svg: "Callable[[float, float], tuple[float, float]]",
+    min_lat: float,
+    max_lat: float,
+    min_lng: float,
+    max_lng: float,
+    subdiv_deg: float,
+    offset_x: float,
+    offset_y: float,
+    map_w_mm: float,
+    map_h_mm: float,
+) -> None:
+    """Render the USGS-style checkered neatline frame around the map area.
+
+    The border is 3 mm wide, divided into two 1.5 mm alternating bands whose
+    segment boundaries align with geographic coordinate subdivisions.  The
+    outer band is inverted relative to the inner band (black↔white) to
+    produce the classic interlocked checker appearance.  Corners are solid
+    black.  Thin hairline rules outline the inner and outer edges for a
+    crisp typographic finish.
+    """
+    BW  = _NL_TOTAL_W   # 3 mm
+    HW  = _NL_BAND_W    # 1.5 mm per band
+    B   = _NL_BLACK
+    W   = _NL_WHITE
+    NS  = _GRAT_N_SAMPLE
+
+    right_x = offset_x + map_w_mm
+    bot_y   = offset_y + map_h_mm
+
+    # Generate subdivision coordinate values covering the map extent (with
+    # one step of padding so partial segments at the edges are included).
+    subdiv_lngs = _gen_values(min_lng - subdiv_deg, max_lng + subdiv_deg, subdiv_deg)
+    subdiv_lats = _gen_values(min_lat - subdiv_deg, max_lat + subdiv_deg, subdiv_deg)
+
+    # Find where each longitude subdivision meridian crosses the top/bottom edges.
+    top_xs: list[float] = []
+    bot_xs: list[float] = []
+    for lng_val in subdiv_lngs:
+        pts = _project_lng_line(transformer, lng_val, min_lat, max_lat, proj_to_svg, n=NS)
+        x = _cross_horizontal(pts, offset_y)
+        if x is not None and offset_x < x < right_x:
+            top_xs.append(x)
+        x = _cross_horizontal(pts, bot_y)
+        if x is not None and offset_x < x < right_x:
+            bot_xs.append(x)
+    top_xs.sort()
+    bot_xs.sort()
+
+    # Find where each latitude subdivision parallel crosses the left/right edges.
+    left_ys: list[float] = []
+    right_ys: list[float] = []
+    for lat_val in subdiv_lats:
+        pts = _project_lat_line(transformer, lat_val, min_lng, max_lng, proj_to_svg, n=NS)
+        y = _cross_vertical(pts, offset_x)
+        if y is not None and offset_y < y < bot_y:
+            left_ys.append(y)
+        y = _cross_vertical(pts, right_x)
+        if y is not None and offset_y < y < bot_y:
+            right_ys.append(y)
+    left_ys.sort()
+    right_ys.sort()
+
+    g = dwg.g(id="neatline")
+
+    # ------------------------------------------------------------------ #
+    # Draw one edge of the checkered border.                               #
+    # ------------------------------------------------------------------ #
+    # Segment coloring: outer band alternates B/W, inner band is always
+    # the opposite of the outer (classic USGS interlocked checker).
+    # Segments are indexed from 0; corners (index 0 and last) are always B.
+
+    def _hsegs(breaks, x0_full, x1_full, inner_y0, outer_y0):
+        """Horizontal edge segments.  inner_y0 is the y-start of the inner band
+        (adjacent to map content); outer_y0 the y-start of the outer band."""
+        segs = [x0_full] + [x for x in breaks if x0_full < x < x1_full] + [x1_full]
+        for i in range(len(segs) - 1):
+            a, b = segs[i], segs[i + 1]
+            c_o = B if i % 2 == 0 else W   # outer colour
+            c_i = W if i % 2 == 0 else B   # inner colour
+            g.add(dwg.rect(insert=(a, outer_y0), size=(b - a, HW), fill=c_o, stroke="none"))
+            g.add(dwg.rect(insert=(a, inner_y0), size=(b - a, HW), fill=c_i, stroke="none"))
+
+    def _vsegs(breaks, y0_full, y1_full, inner_x0, outer_x0):
+        """Vertical edge segments.  inner_x0 is the x-start of the inner band."""
+        segs = [y0_full] + [y for y in breaks if y0_full < y < y1_full] + [y1_full]
+        for i in range(len(segs) - 1):
+            a, b = segs[i], segs[i + 1]
+            c_o = B if i % 2 == 0 else W
+            c_i = W if i % 2 == 0 else B
+            g.add(dwg.rect(insert=(outer_x0, a), size=(HW, b - a), fill=c_o, stroke="none"))
+            g.add(dwg.rect(insert=(inner_x0, a), size=(HW, b - a), fill=c_i, stroke="none"))
+
+    # Top: inner band  = (offset_y - HW) → offset_y
+    #       outer band = (offset_y - BW) → (offset_y - HW)
+    _hsegs(top_xs, offset_x, right_x, offset_y - HW, offset_y - BW)
+
+    # Bottom: inner band = bot_y → (bot_y + HW)
+    #          outer band = (bot_y + HW) → (bot_y + BW)
+    _hsegs(bot_xs, offset_x, right_x, bot_y, bot_y + HW)
+
+    # Left: inner band  = (offset_x - HW) → offset_x
+    #        outer band = (offset_x - BW) → (offset_x - HW)
+    _vsegs(left_ys, offset_y, bot_y, offset_x - HW, offset_x - BW)
+
+    # Right: inner band = right_x → (right_x + HW)
+    #         outer band = (right_x + HW) → (right_x + BW)
+    _vsegs(right_ys, offset_y, bot_y, right_x, right_x + HW)
+
+    # ------------------------------------------------------------------ #
+    # Corner squares — 3 mm × 3 mm, solid black                           #
+    # ------------------------------------------------------------------ #
+    for cx, cy in [
+        (offset_x - BW, offset_y - BW),   # top-left
+        (right_x,       offset_y - BW),   # top-right
+        (offset_x - BW, bot_y),           # bottom-left
+        (right_x,       bot_y),           # bottom-right
+    ]:
+        g.add(dwg.rect(insert=(cx, cy), size=(BW, BW), fill=B, stroke="none"))
+
+    # ------------------------------------------------------------------ #
+    # Hairline outlines — outer perimeter, mid-band divider, inner edge   #
+    # ------------------------------------------------------------------ #
+    sw = _NL_STROKE
+    # Outer perimeter of entire neatline
+    g.add(dwg.rect(
+        insert=(offset_x - BW, offset_y - BW),
+        size=(map_w_mm + 2 * BW, map_h_mm + 2 * BW),
+        fill="none", stroke=B, stroke_width=sw,
+    ))
+    # Mid-band divider lines (horizontal top/bottom, vertical left/right)
+    for (x1, y1, x2, y2) in [
+        (offset_x - BW, offset_y - HW, right_x + BW, offset_y - HW),   # top mid
+        (offset_x - BW, bot_y + HW,   right_x + BW, bot_y + HW),       # bot mid
+        (offset_x - HW, offset_y - BW, offset_x - HW, bot_y + BW),     # left mid
+        (right_x + HW,  offset_y - BW, right_x + HW,  bot_y + BW),     # right mid
+    ]:
+        g.add(dwg.line(start=(x1, y1), end=(x2, y2), stroke=B, stroke_width=sw * 0.6))
+    # Inner edge (map neatline)
+    g.add(dwg.rect(
+        insert=(offset_x, offset_y),
+        size=(map_w_mm, map_h_mm),
+        fill="none", stroke=B, stroke_width=sw,
+    ))
 
     dwg.add(g)
 
@@ -1044,7 +1468,17 @@ def render_terrain_svg(
         _render_osm_lower_layers(dwg, osm_vectors, transformer, proj_to_svg, clip_id="map-area")
 
     # ------------------------------------------------------------------
-    # 4b. Wind streamlines — above hillshade/OSM, below contours
+    # 4b. Graticule — coordinate grid, above OSM, below wind + contours
+    # ------------------------------------------------------------------
+    _grat_params: tuple | None = None
+    if transformer is not None:
+        _grat_params = _render_graticule(
+            dwg, transformer, bounds,
+            proj_to_svg, offset_x, offset_y, map_w_mm, map_h_mm,
+        )
+
+    # ------------------------------------------------------------------
+    # 4c. Wind streamlines — above graticule, below contours
     # ------------------------------------------------------------------
     if wind_streamlines:
         _render_wind_streamlines(dwg, wind_streamlines, proj_to_svg, clip_id="map-area")
@@ -1439,6 +1873,17 @@ def render_terrain_svg(
             **{"letter-spacing": "0.05em"},
         ))
         dwg.add(g_legend)
+
+    # ------------------------------------------------------------------
+    # 9. Checkered neatline border — above all map content, below margins
+    # ------------------------------------------------------------------
+    if _grat_params is not None:
+        _min_lat, _max_lat, _min_lng, _max_lng, _iv_deg, _subdiv_deg, _iv_min = _grat_params
+        _render_checkered_border(
+            dwg, transformer, proj_to_svg,
+            _min_lat, _max_lat, _min_lng, _max_lng, _subdiv_deg,
+            offset_x, offset_y, map_w_mm, map_h_mm,
+        )
 
     dwg.save()
     return str(out.resolve())
