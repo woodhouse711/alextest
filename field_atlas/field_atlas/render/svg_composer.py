@@ -403,84 +403,158 @@ def add_title_block(
     date: str,
     distance_km: float,
     elevation_gain_m: float,
-    position: str = "bottom-left",
+    centroid_lat: float = 0.0,
+    centroid_lng: float = 0.0,
+    duration_hours: float | None = None,
+    margin_mm: float = 25.4,
     enrichment: EnrichmentData | None = None,
 ) -> None:
-    """Add a metadata text block to a svgwrite Drawing in the margin area.
+    """Render a centred typographic information block in the bottom margin.
 
-    The block contains the track name (bold), date, distance, and elevation
-    gain.  It is placed within the margin region so it does not overlap the
-    map content.
+    Rows (top → bottom within the margin)::
+
+      1  Location name — uppercase, letterspaced (+80)           10 pt
+      2  Date, long-form human format                             8 pt
+      3  Hairline rule, 40 mm wide, centred, #CCCCCC, 0.3 pt
+      4  Stats: distance · gain · duration · coordinates          7 pt
+      5  Weather + solar summary  (omitted when no enrichment)   6.5 pt
+      6  "FIELD ATLAS" wordmark, right-aligned                    5 pt
 
     Parameters
     ----------
     svg_drawing:
-        An :class:`svgwrite.Drawing` whose ``size`` attribute is set in
-        millimetres (e.g. ``("457.2mm", "609.6mm")``).  The drawing is
-        mutated in-place; the caller is responsible for calling
-        ``svg_drawing.save()`` afterwards.
+        A :class:`svgwrite.Drawing` in mm user-units.  Mutated in-place;
+        the caller is responsible for ``svg_drawing.save()``.
     track_name:
-        Display name of the route.
+        Route name used as Row-1 fallback when *enrichment* has no
+        ``location_name``.
     date:
-        Formatted date string, e.g. ``"2024-07-14"``.
-    distance_km:
-        Total route distance in kilometres.
-    elevation_gain_m:
-        Cumulative elevation gain in metres.
-    position:
-        Anchor corner: ``"bottom-left"`` (default), ``"bottom-right"``,
-        ``"top-left"``, or ``"top-right"``.
+        ``"YYYY-MM-DD"`` string that is reformatted for display.
+    distance_km, elevation_gain_m:
+        Route statistics for the stats line.
+    centroid_lat, centroid_lng:
+        WGS-84 centroid of the route, displayed in the stats line.
+    duration_hours:
+        Optional total duration; rendered as ``"4H 32M"`` when provided.
+    margin_mm:
+        Uniform margin width (default 25.4 = 1 in).  Controls the block's
+        vertical position and the wordmark's right-edge x position.
+    enrichment:
+        When provided, Row 5 (weather + solar) is included and
+        ``enrichment.location_name`` is preferred for Row 1.
     """
-    width_mm = _parse_mm(svg_drawing.attribs["width"])
+    from datetime import datetime as _dt
+    from field_atlas.enrichment.weather import format_weather_line
+
+    width_mm  = _parse_mm(svg_drawing.attribs["width"])
     height_mm = _parse_mm(svg_drawing.attribs["height"])
 
-    # Layout constants (mm, matching the default 25.4 mm margin).
-    MARGIN = 25.4
-    PAD_X = 3.0    # horizontal inset from the margin edge
-    PAD_Y = 3.5    # vertical inset from the printable-area boundary
-    LINE_H = 4.2   # baseline-to-baseline spacing for body lines (mm)
-    TITLE_SIZE = 3.5   # mm ≈ 10 pt
-    BODY_SIZE = 3.0    # mm ≈ 8.5 pt
+    # --- Typography: 1 pt = 0.3528 mm ------------------------------------
+    R1_MM = 3.53    # 10 pt — location name
+    R2_MM = 2.82    # 8 pt  — date
+    R4_MM = 2.47    # 7 pt  — stats line
+    R5_MM = 2.29    # 6.5 pt — weather / solar
+    R6_MM = 1.76    # 5 pt  — wordmark
 
-    body_lines = [
-        date,
-        f"Distance: {distance_km:.1f} km",
-        f"Elevation gain: {elevation_gain_m:.0f} m",
-    ]
+    MAIN_COLOR  = "#3A3A3A"
+    SOFT_COLOR  = "#666666"
+    RULE_COLOR  = "#CCCCCC"
+    RULE_HALF_W = 20.0          # rule extends ±20 mm from centre (40 mm total)
+    RULE_SW     = 0.106         # ≈ 0.3 pt stroke-width in mm
+    FONT        = "Arial, Helvetica, sans-serif"
 
-    # Vertical anchor: title baseline sits just inside the margin area.
-    if "bottom" in position:
-        # Place title so body lines sit within the bottom margin.
-        title_y = height_mm - MARGIN + PAD_Y + TITLE_SIZE
+    cx           = width_mm / 2.0           # horizontal centre of canvas
+    margin_top_y = height_mm - margin_mm    # top edge of bottom margin
+
+    # Vertical positions — Row 1 baseline anchored from top of the margin.
+    # PAD_TOP leaves a small gap so the cap-top clears the map boundary.
+    PAD_TOP = 2.5
+    r1_y   = margin_top_y + PAD_TOP + R1_MM
+    r2_y   = r1_y + 3.0      # Row 1 → Row 2:  3 mm
+    rule_y = r2_y + 4.0      # Row 2 → rule:   4 mm
+    r4_y   = rule_y + 4.0    # rule  → Row 4:  4 mm
+
+    has_row5 = enrichment is not None and (
+        enrichment.weather is not None or enrichment.solar is not None
+    )
+    if has_row5:
+        r5_y = r4_y + 2.5    # Row 4 → Row 5: 2.5 mm
+        r6_y = r5_y + 5.0    # Row 5 → Row 6: 5 mm
     else:
-        title_y = MARGIN - PAD_Y - LINE_H * len(body_lines)
+        r6_y = r4_y + 5.0    # no Row 5 — balanced gap to wordmark
 
-    # Horizontal anchor and text alignment.
-    if "right" in position:
-        text_x = width_mm - MARGIN - PAD_X
-        anchor = "end"
-    else:
-        text_x = MARGIN + PAD_X
-        anchor = "start"
-
-    common_attrs: dict = {
-        "font_family": "Arial, Helvetica, sans-serif",
-        "text_anchor": anchor,
-        "fill": "#333333",
+    base: dict = {
+        "font_family": FONT,
+        "fill":        MAIN_COLOR,
+        "text_anchor": "middle",
     }
 
+    # ---- Row 1: Location name, uppercase, letterspaced ------------------
+    if enrichment is not None and enrichment.location_name:
+        location = enrichment.location_name.upper()
+    else:
+        location = track_name.upper()
+    r1 = svg_drawing.text(location, insert=(cx, r1_y), font_size=R1_MM, **base)
+    r1["letter-spacing"] = f"{0.08 * R1_MM:.3f}"
+    svg_drawing.add(r1)
+
+    # ---- Row 2: Date, long-form human format ----------------------------
+    try:
+        dt      = _dt.strptime(date, "%Y-%m-%d")
+        fmt_date = f"{dt.strftime('%B')} {dt.day}, {dt.year}"
+    except ValueError:
+        fmt_date = date
     svg_drawing.add(svg_drawing.text(
-        track_name,
-        insert=(text_x, title_y),
-        font_size=TITLE_SIZE,
-        font_weight="bold",
-        **common_attrs,
+        fmt_date, insert=(cx, r2_y), font_size=R2_MM, **base,
     ))
 
-    for i, line in enumerate(body_lines):
+    # ---- Row 3: Hairline rule -------------------------------------------
+    svg_drawing.add(svg_drawing.line(
+        start=(cx - RULE_HALF_W, rule_y),
+        end=(cx + RULE_HALF_W, rule_y),
+        stroke=RULE_COLOR,
+        stroke_width=RULE_SW,
+    ))
+
+    # ---- Row 4: Stats line ----------------------------------------------
+    parts4: list[str] = [f"{distance_km:.1f} KM"]
+    parts4.append(f"{elevation_gain_m:.0f}M GAIN")
+    if duration_hours is not None:
+        total_min = round(duration_hours * 60)
+        h, m = divmod(total_min, 60)
+        parts4.append(f"{h}H {m:02d}M")
+    lat_str = f"{abs(centroid_lat):.2f}°{'N' if centroid_lat >= 0 else 'S'}"
+    lng_str = f"{abs(centroid_lng):.2f}°{'E' if centroid_lng >= 0 else 'W'}"
+    parts4.append(f"{lat_str}  {lng_str}")
+    svg_drawing.add(svg_drawing.text(
+        "  ·  ".join(parts4), insert=(cx, r4_y), font_size=R4_MM, **base,
+    ))
+
+    # ---- Row 5: Weather + solar (only when enrichment available) --------
+    if has_row5:
+        parts5: list[str] = []
+        if enrichment.weather is not None:
+            parts5.append(format_weather_line(enrichment.weather).upper())
+        if enrichment.solar is not None:
+            parts5.append(f"SUNRISE {enrichment.solar.sunrise}")
         svg_drawing.add(svg_drawing.text(
-            line,
-            insert=(text_x, title_y + LINE_H * (i + 1)),
-            font_size=BODY_SIZE,
-            **common_attrs,
+            "  ·  ".join(parts5),
+            insert=(cx, r5_y),
+            font_size=R5_MM,
+            font_family=FONT,
+            fill=SOFT_COLOR,
+            text_anchor="middle",
         ))
+
+    # ---- Row 6: "FIELD ATLAS" wordmark, right-aligned ------------------
+    rx = width_mm - margin_mm   # right edge of the printable area
+    r6 = svg_drawing.text(
+        "FIELD ATLAS",
+        insert=(rx, r6_y),
+        font_size=R6_MM,
+        font_family=FONT,
+        fill=MAIN_COLOR,
+        text_anchor="end",
+    )
+    r6["letter-spacing"] = f"{0.12 * R6_MM:.3f}"
+    svg_drawing.add(r6)
