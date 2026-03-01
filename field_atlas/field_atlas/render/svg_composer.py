@@ -254,6 +254,41 @@ def _chaikin_smooth(pts: list[tuple[float, float]]) -> list[tuple[float, float]]
     return out
 
 
+def _catmull_rom_smooth(
+    pts: list[tuple[float, float]], n_interp: int = 4
+) -> list[tuple[float, float]]:
+    """Catmull-Rom spline interpolation that adds ~4× intermediate points.
+
+    Intended for sparse GPX routes (< 100 waypoints) to remove angular
+    stepping artefacts.  Duplicate-endpoint padding keeps the path anchored
+    at the original start and end positions.
+    """
+    if len(pts) < 4:
+        return pts
+    padded = [pts[0]] + list(pts) + [pts[-1]]
+    result: list[tuple[float, float]] = []
+    for i in range(1, len(padded) - 2):
+        p0, p1, p2, p3 = padded[i - 1], padded[i], padded[i + 1], padded[i + 2]
+        for j in range(n_interp):
+            t = j / n_interp
+            t2, t3 = t * t, t * t * t
+            x = 0.5 * (
+                2 * p1[0]
+                + (-p0[0] + p2[0]) * t
+                + (2 * p0[0] - 5 * p1[0] + 4 * p2[0] - p3[0]) * t2
+                + (-p0[0] + 3 * p1[0] - 3 * p2[0] + p3[0]) * t3
+            )
+            y = 0.5 * (
+                2 * p1[1]
+                + (-p0[1] + p2[1]) * t
+                + (2 * p0[1] - 5 * p1[1] + 4 * p2[1] - p3[1]) * t2
+                + (-p0[1] + 3 * p1[1] - 3 * p2[1] + p3[1]) * t3
+            )
+            result.append((x, y))
+    result.append(pts[-1])
+    return result
+
+
 def _sample_hillshade(
     hillshade,       # np.ndarray shape (rows, cols), values in [0, 1]
     hs_transform,    # rasterio Affine: (col, row) → (lng, lat) in WGS84
@@ -448,9 +483,9 @@ def render_terrain_svg(
                 stroke_linejoin="round",
             )
 
-            # Hillshade opacity: sample at the path midpoint (UTM coords).
-            # Sunlit slopes (hs > 0.6) are rendered at reduced opacity so
-            # the contour network recedes on bright faces, adding depth.
+            # Hillshade colour: sample at the path midpoint (UTM coords).
+            # Sunlit slopes (hs > 0.6) are overridden to ~220-gray (#DCDCDC)
+            # so the contour network visibly recedes on bright faces.
             if use_hillshade:
                 mid = path[len(path) // 2]
                 hs = _sample_hillshade(
@@ -458,43 +493,74 @@ def render_terrain_svg(
                     mid[0], mid[1],
                 )
                 if hs > 0.6:
-                    pl["stroke-opacity"] = "0.7"
+                    pl["stroke"] = "#DCDCDC"
 
             dwg.add(pl)
 
     # ------------------------------------------------------------------
     # 4. Route polyline
     # ------------------------------------------------------------------
+    import math as _math
+
     if len(route_points) >= 2:
-        route_pts = [proj_to_svg(pt["x"], pt["y"]) for pt in route_points]
+        route_pts_proj = [(pt["x"], pt["y"]) for pt in route_points]
+        route_pts = [proj_to_svg(x, y) for x, y in route_pts_proj]
+
+        # Smooth sparse routes (< 100 waypoints) with Catmull-Rom spline
+        # to remove the angular GPS-stepping artefacts.
+        if len(route_pts) < 100:
+            route_pts = _catmull_rom_smooth(route_pts)
+
+        # Pass 1 — white casing: makes the route pop off dense contours.
+        dwg.add(dwg.polyline(
+            route_pts,
+            stroke="#FFFFFF",
+            stroke_width=1.5,
+            fill="none",
+            stroke_linejoin="round",
+            stroke_linecap="round",
+        ))
+        # Pass 2 — blue route on top.
         dwg.add(dwg.polyline(
             route_pts,
             stroke="#2E75B6",
-            stroke_width=1.2,
+            stroke_width=0.9,
             fill="none",
             stroke_linejoin="round",
             stroke_linecap="round",
         ))
 
-        # Start marker (green) and end marker (red).
-        r_mm = 2.0
-        sx, sy = proj_to_svg(route_points[0]["x"], route_points[0]["y"])
-        ex, ey = proj_to_svg(route_points[-1]["x"], route_points[-1]["y"])
+        # Loop detection: start and end within 50 m → single shared marker.
+        p0, p1 = route_pts_proj[0], route_pts_proj[-1]
+        is_loop = _math.hypot(p1[0] - p0[0], p1[1] - p0[1]) < 50.0
 
+        sx, sy = proj_to_svg(route_pts_proj[0][0], route_pts_proj[0][1])
+
+        # Start marker — filled forest-green circle, 2 mm diameter (r=1.0).
         dwg.add(dwg.circle(
             center=(sx, sy),
-            r=r_mm,
-            fill="#27AE60",
+            r=1.0,
+            fill="#3D8B37",
             stroke="white",
-            stroke_width=0.4,
+            stroke_width=0.3,
         ))
-        dwg.add(dwg.circle(
-            center=(ex, ey),
-            r=r_mm,
-            fill="#E74C3C",
-            stroke="white",
-            stroke_width=0.4,
-        ))
+
+        if not is_loop:
+            ex, ey = proj_to_svg(route_pts_proj[-1][0], route_pts_proj[-1][1])
+            # End marker — surveyor's benchmark: open ring + centre dot.
+            dwg.add(dwg.circle(        # outer ring, 2.5 mm diameter (r=1.25)
+                center=(ex, ey),
+                r=1.25,
+                fill="none",
+                stroke="#2E75B6",
+                stroke_width=0.5,
+            ))
+            dwg.add(dwg.circle(        # centre dot, 0.8 mm diameter (r=0.4)
+                center=(ex, ey),
+                r=0.4,
+                fill="#2E75B6",
+                stroke="none",
+            ))
 
     # ------------------------------------------------------------------
     # 5. Feature labels
