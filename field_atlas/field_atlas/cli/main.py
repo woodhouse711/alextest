@@ -22,7 +22,7 @@ import click
 from field_atlas.core.dem_fetcher import fetch_dem, load_dem
 from field_atlas.core.gpx_parser import TrackData, padded_bounds, parse_gpx
 from field_atlas.core.projection import get_projection, project_bounds, project_points
-from field_atlas.core.terrain_processor import generate_contours, smooth_elevation
+from field_atlas.core.terrain_processor import generate_contours, generate_hillshade, smooth_elevation
 from field_atlas.enrichment.features import load_features_from_file
 from field_atlas.enrichment.models import EnrichmentData, enrich, format_info_block
 from field_atlas.enrichment.weather import load_weather_from_file
@@ -293,6 +293,7 @@ def render(
             sys.exit(1)
 
     elevation = smooth_elevation(elevation, sigma=0.8)
+    hillshade = generate_hillshade(elevation)
 
     # ------------------------------------------------------------------
     # Step 7: Generate contour lines
@@ -336,6 +337,8 @@ def render(
         height_mm=height * 25.4,
         enrichment=enrichment,
         transformer=transformer,
+        hillshade=hillshade,
+        hillshade_transform=meta["transform"],
     )
 
     # ------------------------------------------------------------------

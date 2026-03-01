@@ -31,6 +31,16 @@ _CHAR_W_FACTOR = 0.58    # estimated rendered char width / font_size
 _MARKER_GAP   = 1.0      # mm gap between marker right edge and label text
 _WATER_TYPES  = frozenset({"water", "pond", "reservoir"})
 
+# Contour tier style table: (stroke-color, stroke-width-mm)
+# major = every 10th interval (e.g. 100 m at 10 m interval)
+# index = every  5th interval (e.g.  50 m at 10 m interval)
+# minor = every      interval (e.g.  10 m at 10 m interval)
+_CONTOUR_TIERS: dict[str, tuple[str, float]] = {
+    "major": ("#777777", 0.55),
+    "index": ("#999999", 0.40),
+    "minor": ("#C8C8C8", 0.25),
+}
+
 
 def _feature_style(ftype: str) -> dict:
     """Return marker and text style attrs for a given feature type."""
@@ -222,6 +232,58 @@ def _infer_interval(contours: list[dict]) -> float:
     return diffs[len(diffs) // 2]
 
 
+def _chaikin_smooth(pts: list[tuple[float, float]]) -> list[tuple[float, float]]:
+    """Apply one iteration of Chaikin's corner-cutting to an open polyline.
+
+    Each segment (P0, P1) is replaced by two points at the 1/4 and 3/4 marks:
+        Q = 3/4·P0 + 1/4·P1
+        R = 1/4·P0 + 3/4·P1
+
+    The first and last points are preserved so polyline endpoints stay fixed.
+    Polylines with fewer than 3 points are returned unchanged.
+    """
+    if len(pts) < 3:
+        return pts
+    out = [pts[0]]
+    for i in range(len(pts) - 1):
+        ax, ay = pts[i]
+        bx, by = pts[i + 1]
+        out.append((0.75 * ax + 0.25 * bx, 0.75 * ay + 0.25 * by))
+        out.append((0.25 * ax + 0.75 * bx, 0.25 * ay + 0.75 * by))
+    out.append(pts[-1])
+    return out
+
+
+def _sample_hillshade(
+    hillshade,       # np.ndarray shape (rows, cols), values in [0, 1]
+    hs_transform,    # rasterio Affine: (col, row) → (lng, lat) in WGS84
+    transformer,     # pyproj.Transformer: WGS84 (lat, lng) → UTM (E, N)
+    utm_x: float,
+    utm_y: float,
+) -> float:
+    """Return the hillshade value [0, 1] at the given UTM coordinate.
+
+    Reverses the UTM projection and the affine raster transform to find the
+    array index.  Assumes a north-up raster (no rotation: b = d = 0).
+    Returns 1.0 on any error so rendering degrades gracefully.
+    """
+    import math
+    try:
+        # UTM (easting, northing) → WGS84 (lat, lng) via inverse projection.
+        lat, lng = transformer.transform(utm_x, utm_y, direction="INVERSE")
+        # Affine inverse (north-up: b = d = 0):
+        #   x = a·col + c  →  col = (x − c) / a   where x = lng
+        #   y = e·row + f  →  row = (y − f) / e   where y = lat, e < 0
+        col = (lng - hs_transform.c) / hs_transform.a
+        row = (lat - hs_transform.f) / hs_transform.e
+        r = max(0, min(int(round(row)), hillshade.shape[0] - 1))
+        c = max(0, min(int(round(col)), hillshade.shape[1] - 1))
+        val = float(hillshade[r, c])
+        return val if not math.isnan(val) else 1.0
+    except Exception:
+        return 1.0
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -237,6 +299,8 @@ def render_terrain_svg(
     margin_mm: float = 25.4,
     enrichment: EnrichmentData | None = None,
     transformer: pyproj.Transformer | None = None,
+    hillshade=None,
+    hillshade_transform=None,
 ) -> str:
     """Render contour lines and a hiking route as a print-ready SVG.
 
@@ -263,6 +327,16 @@ def render_terrain_svg(
         Canvas height in millimetres (default 609.6 = 24 in).
     margin_mm:
         Uniform margin on all four sides in millimetres (default 25.4 = 1 in).
+    hillshade:
+        Optional float32 array (same grid as the DEM, values in [0, 1]) from
+        :func:`~field_atlas.core.terrain_processor.generate_hillshade`.  When
+        supplied, contour opacity is modulated by local illumination: sunlit
+        segments (hillshade > 0.6) are rendered at 0.7 opacity to produce a
+        subtle 3-D depth cue.
+    hillshade_transform:
+        Rasterio ``Affine`` object paired with *hillshade*; maps ``(col, row)``
+        pixel indices to WGS84 ``(lng, lat)``.  Required when *hillshade* is
+        not ``None``.
 
     Returns
     -------
@@ -314,38 +388,71 @@ def render_terrain_svg(
     # ------------------------------------------------------------------
     # 3. White background
     # ------------------------------------------------------------------
-    dwg.add(dwg.rect(insert=(0, 0), size=(width_mm, height_mm), fill="white"))
+    dwg.add(dwg.rect(
+        insert=(0, 0), size=(width_mm, height_mm), fill="white", stroke="none",
+    ))
 
     # ------------------------------------------------------------------
-    # 4. Contour lines
+    # 4. Contour lines — three-tier visual hierarchy
     # ------------------------------------------------------------------
-    interval_m = _infer_interval(contours)
-    index_interval = interval_m * 5.0  # e.g. 100 m when interval is 20 m
+    interval_m     = _infer_interval(contours)
+    major_interval = interval_m * 10.0   # e.g. 100 m at 10 m interval
+    index_interval = interval_m * 5.0    # e.g.  50 m at 10 m interval
+
+    use_hillshade = (
+        hillshade is not None
+        and hillshade_transform is not None
+        and transformer is not None
+    )
+
+    def _snap(elev: float, step: float) -> bool:
+        """True if *elev* is an integer multiple of *step* (float-safe)."""
+        return step > 0 and abs(round(elev / step) * step - elev) < 0.1
 
     for contour in contours:
         elev = contour["elevation"]
 
-        # An index contour is one whose elevation is a multiple of 5× the
-        # base interval (within floating-point rounding tolerance).
-        is_index = (
-            index_interval > 0
-            and abs(round(elev / index_interval) * index_interval - elev) < 0.1
-        )
+        # Classify: check major before index so a 100 m line isn't also
+        # classified as index (both are multiples of 5× the base interval).
+        if _snap(elev, major_interval):
+            tier = "major"
+        elif _snap(elev, index_interval):
+            tier = "index"
+        else:
+            tier = "minor"
 
-        stroke_color = "#999999" if is_index else "#cccccc"
-        stroke_width = 0.5 if is_index else 0.3
+        stroke_color, stroke_width = _CONTOUR_TIERS[tier]
 
         for path in contour["paths"]:
             if len(path) < 2:
                 continue
+
+            # Convert to SVG coords then apply one pass of Chaikin smoothing
+            # to soften the grid-derived jaggedness.
             pts = [proj_to_svg(xy[0], xy[1]) for xy in path]
-            dwg.add(dwg.polyline(
+            pts = _chaikin_smooth(pts)
+
+            pl = dwg.polyline(
                 pts,
                 stroke=stroke_color,
                 stroke_width=stroke_width,
                 fill="none",
                 stroke_linejoin="round",
-            ))
+            )
+
+            # Hillshade opacity: sample at the path midpoint (UTM coords).
+            # Sunlit slopes (hs > 0.6) are rendered at reduced opacity so
+            # the contour network recedes on bright faces, adding depth.
+            if use_hillshade:
+                mid = path[len(path) // 2]
+                hs = _sample_hillshade(
+                    hillshade, hillshade_transform, transformer,
+                    mid[0], mid[1],
+                )
+                if hs > 0.6:
+                    pl["stroke-opacity"] = "0.7"
+
+            dwg.add(pl)
 
     # ------------------------------------------------------------------
     # 4. Route polyline
