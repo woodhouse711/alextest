@@ -26,6 +26,12 @@ from field_atlas.core.projection import get_projection, project_bounds, project_
 from field_atlas.core.terrain_processor import generate_contours, generate_hillshade
 from field_atlas.enrichment.features import load_features_from_file
 from field_atlas.enrichment.models import EnrichmentData, derive_location_name, enrich, format_info_block
+from field_atlas.enrichment.wind import (
+    build_wind_field,
+    load_streamlines_from_file,
+    save_streamlines_to_file,
+    trace_streamlines,
+)
 from field_atlas.enrichment.osm_vectors import (
     fetch_osm_vectors,
     load_osm_vectors_from_file,
@@ -211,6 +217,27 @@ def cli() -> None:
     metavar="MM",
     help="Base route line width in millimetres.",
 )
+@click.option(
+    "--wind-streamlines",
+    default=60,
+    show_default=True,
+    metavar="N",
+    help=(
+        "Number of wind streamlines to trace and render.  "
+        "0 disables the layer entirely.  Requires weather data or a "
+        "--streamlines-file."
+    ),
+)
+@click.option(
+    "--streamlines-file",
+    default=None,
+    type=click.Path(dir_okay=False, readable=True),
+    metavar="PATH",
+    help=(
+        "Load pre-computed streamlines from a JSON file instead of computing "
+        "them from the DEM + weather data."
+    ),
+)
 def render(
     gpx_file: str,
     output: str | None,
@@ -225,6 +252,8 @@ def render(
     notes: str | None,
     route_palette: str,
     route_width: float,
+    wind_streamlines: int,
+    streamlines_file: str | None,
 ) -> None:
     """Render a terrain map SVG from GPX_FILE.
 
@@ -373,6 +402,50 @@ def render(
         contour["paths"] = projected_paths
 
     # ------------------------------------------------------------------
+    # Step 8b: Wind streamlines
+    # ------------------------------------------------------------------
+    # Priority: --streamlines-file overrides live computation.
+    # Live computation requires weather data for wind speed/direction.
+    computed_streamlines = None
+    if wind_streamlines > 0:
+        if streamlines_file:
+            try:
+                computed_streamlines = load_streamlines_from_file(streamlines_file)
+                click.echo(f"  Wind:     loaded {len(computed_streamlines)} streamlines from {streamlines_file}")
+            except Exception as exc:
+                click.echo(f"  Wind:     could not read {streamlines_file} — {exc}", err=True)
+        elif enrichment is not None and enrichment.weather is not None:
+            try:
+                w = enrichment.weather
+                u_field, v_field = build_wind_field(
+                    elevation=elevation,
+                    wind_speed_kmh=w.wind_speed_max_kmh,
+                    wind_direction_deg=w.wind_direction_dominant_deg,
+                    bounds_projected=projected_bounds,
+                )
+                _date_int = int(date.replace("-", "")) if date else 42
+                computed_streamlines = trace_streamlines(
+                    u_field, v_field,
+                    bounds_projected=projected_bounds,
+                    num_streamlines=wind_streamlines,
+                    wind_direction_deg=w.wind_direction_dominant_deg,
+                    wind_speed_kmh=w.wind_speed_max_kmh,
+                    seed=_date_int,
+                )
+                click.echo(
+                    f"  Wind:     {len(computed_streamlines)} streamlines"
+                    f" ({w.wind_direction_cardinal} {w.wind_speed_max_kmh:.0f} km/h)"
+                )
+                # Cache alongside the other JSON artefacts.
+                cache_path = _CACHE_DIR / f"wind_streamlines_{slug}.json"
+                try:
+                    save_streamlines_to_file(computed_streamlines, cache_path)
+                except Exception:
+                    pass
+            except Exception as exc:
+                click.echo(f"  Wind:     streamline computation failed — {exc}", err=True)
+
+    # ------------------------------------------------------------------
     # Step 9: Render SVG
     # ------------------------------------------------------------------
     # Auto-orient: landscape (24×18 in) if the route footprint is wider than
@@ -414,6 +487,7 @@ def render(
         segment_speeds=track.segment_speeds,
         route_palette=route_palette,
         route_width=route_width,
+        wind_streamlines=computed_streamlines,
     )
 
     # ------------------------------------------------------------------

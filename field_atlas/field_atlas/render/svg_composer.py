@@ -314,6 +314,99 @@ def _render_osm_trails(
     dwg.add(g_trails)
 
 
+def _render_wind_streamlines(
+    dwg: "svgwrite.Drawing",
+    streamlines: "list[list[tuple[float, float, float]]]",
+    proj_to_svg: "Callable[[float, float], tuple[float, float]]",
+    clip_id: str = "map-area",
+) -> None:
+    """Render pre-computed wind streamlines as tapered, semi-transparent paths.
+
+    Each streamline is divided into ~20 overlapping segments whose stroke
+    width follows a bell curve (thin at both ends, widest in the middle),
+    modulated by local wind speed.  Individual path opacities (0.06–0.12)
+    keep the layer subliminal — felt more than seen.
+
+    Layer placement: above hillshade, below contours.  Wrapped in a group
+    with id="wind-streamlines" so it can be targeted or hidden in editors.
+
+    Parameters
+    ----------
+    dwg:
+        The active svgwrite Drawing (mm user-units).
+    streamlines:
+        Output of :func:`~field_atlas.enrichment.wind.trace_streamlines`.
+        Each streamline is a list of ``(x, y, speed_kmh)`` tuples in
+        projected metres.
+    proj_to_svg:
+        Closure that converts ``(x_metres, y_metres)`` → ``(x_mm, y_mm)``.
+    clip_id:
+        id of the ``<clipPath>`` element to apply; default ``"map-area"``.
+    """
+    import random as _random
+
+    # Seeded RNG for per-streamline opacity variation — deterministic so the
+    # same streamlines always render identically.
+    _rng = _random.Random(7654)
+
+    g = dwg.g(id="wind-streamlines", clip_path=f"url(#{clip_id})")
+
+    _N_SEGS = 20         # segments per streamline
+    _W_MIN  = 0.08       # mm — hairline at ends
+    _W_MAX  = 0.30       # mm — peak width at midpoint
+    _COLOR  = "#444444"  # dark gray
+
+    for stream in streamlines:
+        if len(stream) < 4:
+            continue
+
+        # Per-streamline opacity: subtle variation makes the layer more organic.
+        opacity = round(_rng.uniform(0.06, 0.12), 3)
+
+        n_pts = len(stream)
+        # Project all points once.
+        svg_pts = [proj_to_svg(x, y) for x, y, _ in stream]
+        speeds  = [spd for _, _, spd in stream]
+        # Base speed for normalisation: use median so outliers don't dominate.
+        sorted_spd = sorted(speeds)
+        base_spd = max(1e-6, sorted_spd[len(sorted_spd) // 2])
+
+        for seg_i in range(_N_SEGS):
+            # Map segment index to streamline point range.
+            i_start = int(round(seg_i       / _N_SEGS * (n_pts - 1)))
+            i_end   = int(round((seg_i + 1) / _N_SEGS * (n_pts - 1)))
+            if i_end <= i_start:
+                i_end = i_start + 1
+            i_end = min(i_end, n_pts - 1)
+
+            seg_svg = svg_pts[i_start : i_end + 1]
+            if len(seg_svg) < 2:
+                continue
+
+            # Bell-curve width based on the segment's midpoint position t ∈ [0,1].
+            t_mid = (seg_i + 0.5) / _N_SEGS
+            bell  = 4.0 * t_mid * (1.0 - t_mid)   # 0 at ends, 1 at centre
+
+            # Speed modulation: faster segments are slightly thicker.
+            seg_speeds  = speeds[i_start : i_end + 1]
+            mean_spd    = sum(seg_speeds) / max(1, len(seg_speeds))
+            speed_scale = min(1.6, max(0.4, mean_spd / base_spd))
+
+            w = (_W_MIN + (_W_MAX - _W_MIN) * bell) * speed_scale
+
+            g.add(dwg.polyline(
+                seg_svg,
+                stroke=_COLOR,
+                stroke_width=round(w, 4),
+                stroke_linecap="round",
+                stroke_linejoin="round",
+                fill="none",
+                opacity=opacity,
+            ))
+
+    dwg.add(g)
+
+
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
@@ -844,6 +937,7 @@ def render_terrain_svg(
     segment_speeds: list[float] | None = None,
     route_palette: str = "coastal",
     route_width: float = 1.8,
+    wind_streamlines: "list[list[tuple[float, float, float]]] | None" = None,
 ) -> str:
     """Render contour lines and a hiking route as a print-ready SVG.
 
@@ -948,6 +1042,12 @@ def render_terrain_svg(
     # ------------------------------------------------------------------
     if osm_vectors is not None and transformer is not None:
         _render_osm_lower_layers(dwg, osm_vectors, transformer, proj_to_svg, clip_id="map-area")
+
+    # ------------------------------------------------------------------
+    # 4b. Wind streamlines — above hillshade/OSM, below contours
+    # ------------------------------------------------------------------
+    if wind_streamlines:
+        _render_wind_streamlines(dwg, wind_streamlines, proj_to_svg, clip_id="map-area")
 
     # ------------------------------------------------------------------
     # 5. Contour lines — three-tier visual hierarchy
