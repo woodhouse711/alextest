@@ -397,18 +397,17 @@ def render(
     )
 
     # ------------------------------------------------------------------
-    # Step 10: Timestamped PNG preview (committed archive in docs/preview/)
+    # Step 10: Timestamped PDF export (vector; archived in docs/preview/)
     # ------------------------------------------------------------------
     import cairosvg
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     preview_dir = Path("docs") / "preview"
     preview_dir.mkdir(parents=True, exist_ok=True)
-    png_path = str(preview_dir / f"{slug}_{ts}.png")
+    pdf_path = str(preview_dir / f"{slug}_{ts}.pdf")
     try:
-        # 960 px wide → 1280 px tall for an 18×24 canvas; compact for GitHub.
-        cairosvg.svg2png(url=svg_path, write_to=png_path, output_width=960)
+        cairosvg.svg2pdf(url=svg_path, write_to=pdf_path)
     except Exception as exc:
-        png_path = f"(failed — {exc})"
+        pdf_path = f"(failed — {exc})"
 
     # ------------------------------------------------------------------
     # Summary
@@ -449,7 +448,7 @@ def render(
 
     click.echo(f"  Contours: {n_levels} lines at {contour_interval:.0f}m interval")
     click.echo(f"  Output:   {svg_path}")
-    click.echo(f"  Preview:  {png_path}")
+    click.echo(f"  PDF:      {pdf_path}")
 
 
 # ---------------------------------------------------------------------------
