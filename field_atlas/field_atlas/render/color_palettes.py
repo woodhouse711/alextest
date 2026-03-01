@@ -28,7 +28,7 @@ class RoutePalette:
 # ---------------------------------------------------------------------------
 
 PALETTES: dict[str, RoutePalette] = {
-    "maroon_turquoise": RoutePalette("#6B2039", "#8C7A6B", "#2B8C8C", "Maroon to Turquoise"),
+    "maroon_turquoise": RoutePalette("#6B2039", "#FFFFFF", "#2B8C8C", "Maroon to Turquoise"),
     "ember":            RoutePalette("#8B2500", "#CC7A29", "#E8B84D", "Ember"),
     "ocean":            RoutePalette("#1A3A4A", "#3A7CA5", "#5BC4B0", "Ocean"),
     "mono":             RoutePalette("#222222", "#666666", "#AAAAAA", "Monochrome"),

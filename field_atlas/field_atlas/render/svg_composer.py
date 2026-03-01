@@ -1012,18 +1012,32 @@ def render_terrain_svg(
                 stroke_linecap="round",
             ))
 
-            # Pass 2 — individual colored segments.
+            # Pass 2 — per-segment linearGradient strokes for smooth blending.
+            # Each segment fades from its own color into the next segment's
+            # color, eliminating hard edges between flat-colored chunks.
+            _colors = [interpolate_color(n, _palette) for n in _norm]
+
             g_segs = dwg.g(id="route-speed", clip_path="url(#map-area)")
-            for i, norm_val in enumerate(_norm):
-                color = interpolate_color(norm_val, _palette)
+            for i, c0 in enumerate(_colors):
                 p0, p1 = route_pts[i], route_pts[i + 1]
-                g_segs.add(dwg.line(
-                    start=p0,
-                    end=p1,
-                    stroke=color,
+                c1 = _colors[i + 1] if i + 1 < len(_colors) else c0
+
+                grad = dwg.defs.add(dwg.linearGradient(
+                    id=f"rsg{i}",
+                    gradientUnits="userSpaceOnUse",
+                    x1=f"{p0[0]:.4f}", y1=f"{p0[1]:.4f}",
+                    x2=f"{p1[0]:.4f}", y2=f"{p1[1]:.4f}",
+                ))
+                grad.add_stop_color(0,   c0)
+                grad.add_stop_color(1.0, c1)
+
+                g_segs.add(dwg.path(
+                    d=f"M {p0[0]:.4f},{p0[1]:.4f} L {p1[0]:.4f},{p1[1]:.4f}",
+                    stroke=f"url(#rsg{i})",
                     stroke_width=_core_w,
                     stroke_linecap="round",
                     stroke_linejoin="round",
+                    fill="none",
                 ))
             g_route.add(g_segs)
 
