@@ -1138,12 +1138,12 @@ def render_terrain_svg(
             )
             _smooth_colors = [interpolate_color(v, _palette) for v in _smooth_norms]
 
-            # Pass 1 — white casing: single smooth Bézier path.
+            # Pass 1 — black casing: single smooth Bézier path.
             # _catmull_rom_path produces cubic Bézier C commands through the
             # resampled points (already dense, so curves are essentially arcs).
             g_route.add(dwg.path(
                 d=_catmull_rom_path(_smooth_pts),
-                stroke="#FFFFFF",
+                stroke="#000000",
                 stroke_width=_casing_w,
                 fill="none",
                 stroke_linejoin="round",
@@ -1197,10 +1197,10 @@ def render_terrain_svg(
             if len(route_pts) < 100:
                 route_pts = _catmull_rom_smooth(route_pts)
 
-            # Pass 1 — white casing.
+            # Pass 1 — black casing.
             g_route.add(dwg.polyline(
                 route_pts,
-                stroke="#FFFFFF",
+                stroke="#000000",
                 stroke_width=_casing_w,
                 fill="none",
                 stroke_linejoin="round",
@@ -1233,10 +1233,10 @@ def render_terrain_svg(
 
         if not is_loop:
             ex, ey = proj_to_svg(route_pts_proj[-1][0], route_pts_proj[-1][1])
-            # End marker — same style as start.
+            # End marker — same style as start, 30% smaller.
             g_route.add(dwg.circle(
                 center=(ex, ey),
-                r=3.0,
+                r=2.1,
                 fill="#FFFFFF",
                 stroke="#000000",
                 stroke_width=0.45,
