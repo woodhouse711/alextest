@@ -301,6 +301,13 @@ def render_terrain_svg(
     transformer: pyproj.Transformer | None = None,
     hillshade=None,
     hillshade_transform=None,
+    track_name: str = "",
+    date: str = "",
+    distance_km: float = 0.0,
+    elevation_gain_m: float = 0.0,
+    centroid_lat: float = 0.0,
+    centroid_lng: float = 0.0,
+    duration_hours: float | None = None,
 ) -> str:
     """Render contour lines and a hiking route as a print-ready SVG.
 
@@ -499,6 +506,22 @@ def render_terrain_svg(
             map_x1=offset_x + map_w_mm,
             map_y1=offset_y + map_h_mm,
         )
+
+    # ------------------------------------------------------------------
+    # 6. Title block (location, date, stats, wordmark) in bottom margin
+    # ------------------------------------------------------------------
+    add_title_block(
+        dwg,
+        track_name=track_name,
+        date=date,
+        distance_km=distance_km,
+        elevation_gain_m=elevation_gain_m,
+        centroid_lat=centroid_lat,
+        centroid_lng=centroid_lng,
+        duration_hours=duration_hours,
+        margin_mm=margin_mm,
+        enrichment=enrichment,
+    )
 
     dwg.save()
     return str(out.resolve())

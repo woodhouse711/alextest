@@ -340,6 +340,13 @@ def render(
         transformer=transformer,
         hillshade=hillshade,
         hillshade_transform=meta["transform"],
+        track_name=track.name,
+        date=display_date,
+        distance_km=track.total_distance_km,
+        elevation_gain_m=track.elevation_gain_m,
+        centroid_lat=centroid_lat,
+        centroid_lng=centroid_lng,
+        duration_hours=track.duration_hours,
     )
 
     # ------------------------------------------------------------------
