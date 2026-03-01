@@ -291,6 +291,104 @@ def _catmull_rom_smooth(
 
 
 
+def _draw_wind_indicator(
+    dwg: "svgwrite.Drawing",
+    weather: "WeatherData",
+    cx: float,
+    cy: float,
+) -> None:
+    """Draw a wind direction compass inset in a <g id='wind-indicator'> group.
+
+    The compass rose has a circle, four cardinal tick marks, and an "N" label.
+    A single arrow from the centre points toward the direction the wind is
+    *coming from* (meteorological convention).  A speed label sits below.
+
+    Parameters
+    ----------
+    dwg     : SVGWrite Drawing (mm user-units)
+    weather : WeatherData with wind_direction_dominant_deg / cardinal / speed
+    cx, cy  : centre of the compass circle in mm (SVG coordinates)
+    """
+    import math as _math
+
+    COMP_R   = 6.0          # compass circle radius → 12 mm diameter
+    TICK_L   = 1.5          # cardinal tick length (extends outside circle)
+    ARROW_L  = 5.0          # wind arrow length from centre
+    HEAD_LEN = 1.4          # arrowhead depth
+    HEAD_WID = 0.6          # arrowhead half-width at base
+
+    PT4   = 4   * 0.3528    # 4 pt  → mm
+    PT4_5 = 4.5 * 0.3528    # 4.5 pt → mm
+
+    MUTED = "#BBBBBB"
+    FAINT = "#AAAAAA"
+    RULE  = "#DDDDDD"
+    ARROW = "#999999"
+    FONT  = "Arial, Helvetica, sans-serif"
+
+    g = dwg.g(id="wind-indicator")
+
+    # ------------------------------------------------------------------
+    # 1. Compass rose: circle + four cardinal ticks + N label
+    # ------------------------------------------------------------------
+    g.add(dwg.circle(
+        center=(cx, cy), r=COMP_R,
+        fill="none", stroke=RULE, stroke_width=0.15,
+    ))
+
+    # Cardinal direction unit vectors (compass bearing → SVG dx/dy)
+    # bearing 0=N, 90=E, 180=S, 270=W; SVG y increases downward
+    cardinals = [(0, 0.0, -1.0), (90, 1.0, 0.0), (180, 0.0, 1.0), (270, -1.0, 0.0)]
+    for _bearing, dx, dy in cardinals:
+        x0, y0 = cx + dx * COMP_R,            cy + dy * COMP_R
+        x1, y1 = cx + dx * (COMP_R + TICK_L), cy + dy * (COMP_R + TICK_L)
+        g.add(dwg.line(start=(x0, y0), end=(x1, y1), stroke=RULE, stroke_width=0.15))
+
+    # "N" label sits above the north tick; baseline is 0.5 mm above the tick end
+    g.add(dwg.text(
+        "N",
+        insert=(cx, cy - COMP_R - TICK_L - 0.5),
+        font_size=PT4, font_family=FONT, fill=MUTED, text_anchor="middle",
+    ))
+
+    # ------------------------------------------------------------------
+    # 2. Wind arrow — FROM direction (meteorological convention)
+    # ------------------------------------------------------------------
+    bearing_rad = _math.radians(weather.wind_direction_dominant_deg)
+    # compass → SVG screen: dx = sin(bearing), dy = -cos(bearing)
+    adx = _math.sin(bearing_rad)
+    ady = -_math.cos(bearing_rad)
+
+    tip_x, tip_y = cx + adx * ARROW_L, cy + ady * ARROW_L
+
+    # Shaft
+    g.add(dwg.line(
+        start=(cx, cy), end=(tip_x, tip_y),
+        stroke=ARROW, stroke_width=0.4, stroke_linecap="round",
+    ))
+
+    # Filled triangle arrowhead at tip
+    bx, by = tip_x - adx * HEAD_LEN, tip_y - ady * HEAD_LEN   # base centre
+    px, py = -ady, adx                                          # perpendicular
+    pt1 = (bx + px * HEAD_WID, by + py * HEAD_WID)
+    pt2 = (bx - px * HEAD_WID, by - py * HEAD_WID)
+    g.add(dwg.polygon([(tip_x, tip_y), pt1, pt2], fill=ARROW, stroke="none"))
+
+    # ------------------------------------------------------------------
+    # 3. Speed label centred below the south tick
+    # ------------------------------------------------------------------
+    speed = round(weather.wind_speed_max_kmh)
+    label = f"{weather.wind_direction_cardinal} {speed} KM/H"
+    label_y = cy + COMP_R + TICK_L + PT4_5 + 1.0
+    g.add(dwg.text(
+        label,
+        insert=(cx, label_y),
+        font_size=PT4_5, font_family=FONT, fill=FAINT, text_anchor="middle",
+    ))
+
+    dwg.add(g)
+
+
 def _draw_sun_arc(
     dwg: "svgwrite.Drawing",
     solar: "SolarData",
@@ -694,13 +792,22 @@ def render_terrain_svg(
         )
 
     # ------------------------------------------------------------------
-    # 6. Sun arc inset — upper-right margin, only with solar enrichment
+    # 6. Environmental insets — upper corners, only with enrichment data
     # ------------------------------------------------------------------
+
+    # Sun arc — upper-right margin
     if enrichment is not None and enrichment.solar is not None:
         ARC_W, ARC_H = 35.0, 18.0
         arc_x = width_mm - margin_mm - 2.0 - ARC_W  # 2 mm pad from printable edge
         arc_y = 2.5                                   # 2.5 mm from top of page
         _draw_sun_arc(dwg, enrichment.solar, arc_x, arc_y, ARC_W, ARC_H)
+
+    # Wind indicator — upper-left margin, mirroring sun arc
+    if enrichment is not None and enrichment.weather is not None:
+        COMP_R, TICK_L = 6.0, 1.5
+        wind_cx = margin_mm + 2.0 + COMP_R + TICK_L  # = margin_mm + 9.5
+        wind_cy = 12.5                                # same vertical band as sun arc
+        _draw_wind_indicator(dwg, enrichment.weather, wind_cx, wind_cy)
 
     # ------------------------------------------------------------------
     # 7. Title block (location, date, stats, wordmark) in bottom margin
