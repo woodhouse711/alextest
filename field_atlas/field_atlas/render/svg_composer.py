@@ -36,12 +36,11 @@ _WATER_TYPES  = frozenset({"water", "pond", "reservoir"})
 # major = every 10th interval (e.g. 100 m at 10 m interval)
 # index = every  5th interval (e.g.  50 m at 10 m interval)
 # minor = every      interval (e.g.  10 m at 10 m interval)
-# All tiers use 90% black (#1A1A1A); weights are close together so the
-# hierarchy reads subtly rather than dominating the sheet.
+# Colors are pure grayscale percentages; no RGB variation.
 _CONTOUR_TIERS: dict[str, tuple[str, float]] = {
-    "major": ("#1A1A1A", 0.30),
-    "index": ("#1A1A1A", 0.22),
-    "minor": ("#1A1A1A", 0.12),
+    "major": ("#808080", 0.20),   # 50% black — heavy/primary
+    "index": ("#BFBFBF", 0.10),   # 25% black — medium
+    "minor": ("#D9D9D9", 0.05),   # 15% black — light
 }
 
 # Index contour label style
@@ -73,10 +72,14 @@ def _add_feature_marker(
     distance from sx to where the label text should begin.
     """
     if ftype == "peak":
-        # Solid upward-pointing triangle, 2 mm tall × 2 mm wide.
-        pts = [(sx, sy - 1.0), (sx - 1.0, sy + 1.0), (sx + 1.0, sy + 1.0)]
-        g.add(dwg.polygon(pts, fill=_PEAK_COLOR, stroke="none"))
-        return 1.0 + _MARKER_GAP
+        # + crosshair: two orthogonal 1.6 mm strokes centred on (sx, sy).
+        arm = 0.8
+        lw  = 0.35
+        g.add(dwg.line(start=(sx - arm, sy), end=(sx + arm, sy),
+                       stroke=_PEAK_COLOR, stroke_width=lw, stroke_linecap="round"))
+        g.add(dwg.line(start=(sx, sy - arm), end=(sx, sy + arm),
+                       stroke=_PEAK_COLOR, stroke_width=lw, stroke_linecap="round"))
+        return arm + _MARKER_GAP
     if ftype in _WATER_TYPES:
         # Filled circle, r = 0.75 mm.
         g.add(dwg.circle(center=(sx, sy), r=0.75, fill=_WATER_COLOR, stroke="none"))
@@ -167,7 +170,7 @@ def _render_feature_labels(
         x_off = _add_feature_marker(g, dwg, feat.feature_type, sx, sy)
 
         txt_attrs: dict = {
-            "font_family": "Arial, Helvetica, sans-serif",
+            "font_family": "Liberation Sans, Arial, Helvetica, sans-serif",
             "font_size":   st["font_mm"],
             "fill":        st["color"],
         }
@@ -240,13 +243,8 @@ def _render_osm_lower_layers(
     """
     clip = f"url(#{clip_id})"
 
-    # 1. Water areas (filled polygons) ------------------------------------
-    g_wa = dwg.g(id="water-areas", clip_path=clip)
-    for polygon in vectors.water_areas:
-        pts = _project_osm_geom(polygon, transformer, proj_to_svg)
-        if len(pts) >= 3:
-            g_wa.add(dwg.polygon(pts, fill=_WATER_FILL, stroke="none"))
-    dwg.add(g_wa)
+    # 1. Water areas — PAUSED: lake fill polygons disabled pending design review.
+    #    Waterway lines below remain active.
 
     # 2. Waterways (blue-gray lines) ---------------------------------------
     g_ww = dwg.g(id="waterways", clip_path=clip)
@@ -494,7 +492,7 @@ def _draw_wind_indicator(
     FAINT = "#AAAAAA"
     RULE  = "#DDDDDD"
     ARROW = "#999999"
-    FONT  = "Arial, Helvetica, sans-serif"
+    FONT  = "Liberation Sans, Arial, Helvetica, sans-serif"
 
     g = dwg.g(id="wind-indicator")
 
@@ -611,7 +609,7 @@ def _draw_sun_arc(
     MUTED  = "#BBBBBB"
     FAINT  = "#AAAAAA"
     RULE   = "#DDDDDD"
-    FONT   = "Arial, Helvetica, sans-serif"
+    FONT   = "Liberation Sans, Arial, Helvetica, sans-serif"
     PT4    = 4   * 0.3528   # 4 pt → mm
     PT4_5  = 4.5 * 0.3528   # 4.5 pt → mm
 
@@ -858,9 +856,11 @@ def render_terrain_svg(
 
     g_contours = dwg.g(id="contours", clip_path="url(#map-area)")
 
-    # Accumulate the best (longest) label candidate for each index elevation.
+    # Accumulate the best (longest) label candidate for each MAJOR elevation.
+    # Labels are placed only on major (heavy/primary) contour lines so the
+    # elevation annotation and the visual hierarchy reinforce each other.
     # key: elevation float → value: (svg_cx, svg_cy, angle_deg, path_point_count)
-    _index_label_best: dict[float, tuple] = {}
+    _major_label_best: dict[float, tuple] = {}
 
     for contour in contours:
         elev = contour["elevation"]
@@ -904,12 +904,11 @@ def render_terrain_svg(
                 stroke_linejoin="round",
             ))
 
-            # Collect label placement for index contours: track the longest
-            # path (most SVG points) at each elevation and record the
-            # midpoint position + local tangent angle.
-            if tier == "index" and len(pts) >= 12:
+            # Collect label placement for MAJOR contours only: track the
+            # longest path at each elevation and record the midpoint + tangent.
+            if tier == "major" and len(pts) >= 8:
                 n_pts = len(pts)
-                current_best = _index_label_best.get(elev)
+                current_best = _major_label_best.get(elev)
                 if current_best is None or n_pts > current_best[3]:
                     mid = n_pts // 2
                     # Stable tangent: 2-point lookahead/lookbehind.
@@ -923,20 +922,21 @@ def render_terrain_svg(
                     elif angle < -90.0:
                         angle += 180.0
                     cx, cy = pts[mid]
-                    _index_label_best[elev] = (cx, cy, angle, n_pts)
+                    _major_label_best[elev] = (cx, cy, angle, n_pts)
 
-    # --- Index contour elevation labels (renders above the polylines) --------
+    # --- Major contour elevation labels (renders above the polylines) --------
+    # A white knockout rectangle creates the visual break in the contour line
+    # so the elevation numeral floats cleanly within the line itself.
     g_labels = dwg.g(id="contour-labels")
-    for elev, (cx, cy, angle_deg, _) in _index_label_best.items():
+    for elev, (cx, cy, angle_deg, _) in _major_label_best.items():
         # Skip labels whose centre falls outside the visible map.
         if not (map_x0 <= cx <= map_x1 and map_y0 <= cy <= map_y1):
             continue
         label = str(int(elev))
-        tw = len(label) * _CONTOUR_LABEL_CHAR_W + 0.8   # text width + h-padding
-        th = _CONTOUR_LABEL_FONT_MM + 0.5                # text height + v-padding
-        # Group with rotation around the label centre.
+        # Extra horizontal padding widens the break so it reads as a true gap.
+        tw = len(label) * _CONTOUR_LABEL_CHAR_W + 1.4
+        th = _CONTOUR_LABEL_FONT_MM + 0.6
         g_lbl = dwg.g(transform=f"rotate({angle_deg:.1f},{cx:.3f},{cy:.3f})")
-        # White knockout rect so the label reads over intersecting contours.
         g_lbl.add(dwg.rect(
             insert=(cx - tw / 2, cy - th / 2),
             size=(tw, th),
@@ -947,9 +947,9 @@ def render_terrain_svg(
             label,
             insert=(cx, cy + _CONTOUR_LABEL_FONT_MM * 0.35),
             text_anchor="middle",
-            font_family="Arial, Helvetica, sans-serif",
+            font_family="Liberation Sans, Arial, sans-serif",
             font_size=_CONTOUR_LABEL_FONT_MM,
-            fill=_CONTOUR_TIERS["index"][0],
+            fill=_CONTOUR_TIERS["major"][0],
         ))
         g_labels.add(g_lbl)
 
@@ -1147,7 +1147,7 @@ def add_title_block(
     RULE_COLOR  = "#CCCCCC"
     RULE_HALF_W = 60.0          # rule extends ±60 mm from centre (120 mm total)
     RULE_SW     = 0.318         # ≈ 0.9 pt stroke-width in mm
-    FONT        = "Arial, Helvetica, sans-serif"
+    FONT        = "Liberation Sans, Arial, Helvetica, sans-serif"
 
     cx           = width_mm / 2.0                  # horizontal centre of canvas
     margin_top_y = height_mm - bottom_margin_mm    # top edge of title block strip
