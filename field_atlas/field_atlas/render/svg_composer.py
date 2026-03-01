@@ -457,6 +457,41 @@ def _catmull_rom_smooth(
     return result
 
 
+def _cr_bezier_cp(
+    pts: list[tuple[float, float]], i: int
+) -> tuple[tuple[float, float], tuple[float, float]]:
+    """Return the two cubic Bézier control points for segment pts[i]→pts[i+1].
+
+    Uses the Catmull-Rom ↔ cubic-Bézier conversion so adjacent segments share
+    tangent directions and produce a G1-continuous (smooth-joining) spline.
+    Boundary segments duplicate the nearest endpoint as a phantom neighbour.
+    """
+    n = len(pts)
+    p0 = pts[max(0, i - 1)]
+    p1 = pts[i]
+    p2 = pts[i + 1]
+    p3 = pts[min(n - 1, i + 2)]
+    cp1 = (p1[0] + (p2[0] - p0[0]) / 6.0, p1[1] + (p2[1] - p0[1]) / 6.0)
+    cp2 = (p2[0] - (p3[0] - p1[0]) / 6.0, p2[1] - (p3[1] - p1[1]) / 6.0)
+    return cp1, cp2
+
+
+def _catmull_rom_path(pts: list[tuple[float, float]]) -> str:
+    """Build a single smooth SVG path string from a Catmull-Rom spline.
+
+    Produces one cubic Bézier ``C`` command per segment so the result is
+    identical in shape to the per-segment curves used for speed coloring.
+    """
+    if len(pts) < 2:
+        return ""
+    parts = [f"M {pts[0][0]:.4f},{pts[0][1]:.4f}"]
+    for i in range(len(pts) - 1):
+        (cp1x, cp1y), (cp2x, cp2y) = _cr_bezier_cp(pts, i)
+        p2 = pts[i + 1]
+        parts.append(
+            f"C {cp1x:.4f},{cp1y:.4f} {cp2x:.4f},{cp2y:.4f} {p2[0]:.4f},{p2[1]:.4f}"
+        )
+    return " ".join(parts)
 
 
 def _draw_wind_indicator(
@@ -1002,9 +1037,9 @@ def render_terrain_svg(
 
             _palette = get_palette(route_palette)
 
-            # Pass 1 — white casing (full polyline at 1.5× width).
-            g_route.add(dwg.polyline(
-                route_pts,
+            # Pass 1 — white casing: smooth Catmull-Rom path at 1.5× width.
+            g_route.add(dwg.path(
+                d=_catmull_rom_path(route_pts),
                 stroke="#FFFFFF",
                 stroke_width=_casing_w,
                 fill="none",
@@ -1012,15 +1047,18 @@ def render_terrain_svg(
                 stroke_linecap="round",
             ))
 
-            # Pass 2 — per-segment linearGradient strokes for smooth blending.
-            # Each segment fades from its own color into the next segment's
-            # color, eliminating hard edges between flat-colored chunks.
+            # Pass 2 — per-segment Catmull-Rom Bézier curves with linearGradient
+            # strokes.  Each curve is a cubic Bézier C command whose control
+            # points are derived from the same Catmull-Rom formula as the casing,
+            # so every joint is G1-continuous (tangent-continuous).  The gradient
+            # runs from this segment's color to the next, eliminating hard edges.
             _colors = [interpolate_color(n, _palette) for n in _norm]
 
             g_segs = dwg.g(id="route-speed", clip_path="url(#map-area)")
             for i, c0 in enumerate(_colors):
                 p0, p1 = route_pts[i], route_pts[i + 1]
                 c1 = _colors[i + 1] if i + 1 < len(_colors) else c0
+                (cp1x, cp1y), (cp2x, cp2y) = _cr_bezier_cp(route_pts, i)
 
                 grad = dwg.defs.add(dwg.linearGradient(
                     id=f"rsg{i}",
@@ -1032,7 +1070,9 @@ def render_terrain_svg(
                 grad.add_stop_color(1.0, c1)
 
                 g_segs.add(dwg.path(
-                    d=f"M {p0[0]:.4f},{p0[1]:.4f} L {p1[0]:.4f},{p1[1]:.4f}",
+                    d=(f"M {p0[0]:.4f},{p0[1]:.4f} "
+                       f"C {cp1x:.4f},{cp1y:.4f} {cp2x:.4f},{cp2y:.4f} "
+                       f"{p1[0]:.4f},{p1[1]:.4f}"),
                     stroke=f"url(#rsg{i})",
                     stroke_width=_core_w,
                     stroke_linecap="round",
