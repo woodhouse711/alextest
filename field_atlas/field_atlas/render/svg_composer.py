@@ -289,6 +289,125 @@ def _catmull_rom_smooth(
     return result
 
 
+
+
+def _draw_sun_arc(
+    dwg: "svgwrite.Drawing",
+    solar: "SolarData",
+    origin_x: float,
+    origin_y: float,
+    width_mm: float = 35.0,
+    height_mm: float = 18.0,
+) -> None:
+    """Draw a sun-path arc inset in a <g id='sun-arc'> group.
+
+    The diagram shows the sun's trajectory across the sky on the day of the
+    hike.  East (sunrise) is on the left; West (sunset) on the right.
+    Azimuth is mapped linearly across *width_mm*; altitude linearly across
+    *height_mm*.  The bottom edge of the diagram is the horizon line.
+
+    Only called when *solar* data is present.  The diagram is deliberately
+    low-contrast — a data whisper rather than a shout.
+
+    Parameters
+    ----------
+    dwg        : SVGWrite Drawing (mm user-units)
+    solar      : SolarData instance with a populated sun_path
+    origin_x   : left edge of the diagram in mm (SVG coordinates)
+    origin_y   : top edge of the diagram in mm (SVG coordinates)
+    width_mm   : total width of the diagram
+    height_mm  : total height from baseline to peak arc
+    """
+    from field_atlas.enrichment.solar import sun_arc_points
+
+    arc_pts = sun_arc_points(solar, num_points=48)
+    if len(arc_pts) < 2:
+        return
+
+    baseline_y = origin_y + height_mm       # horizon = bottom of diagram
+
+    az_vals  = [p["azimuth_deg"]  for p in arc_pts]
+    alt_vals = [p["altitude_deg"] for p in arc_pts]
+    az_min, az_max = min(az_vals), max(az_vals)
+    alt_max = max(alt_vals)
+
+    if az_max <= az_min or alt_max <= 0:
+        return
+
+    def _to_svg(az: float, alt: float) -> tuple[float, float]:
+        x = origin_x + (az - az_min) / (az_max - az_min) * width_mm
+        y = baseline_y - (alt / alt_max) * height_mm
+        return x, y
+
+    GOLD   = "#E8C86A"
+    MUTED  = "#BBBBBB"
+    FAINT  = "#AAAAAA"
+    RULE   = "#DDDDDD"
+    FONT   = "Arial, Helvetica, sans-serif"
+    PT4    = 4   * 0.3528   # 4 pt → mm
+    PT4_5  = 4.5 * 0.3528   # 4.5 pt → mm
+
+    g = dwg.g(id="sun-arc")
+
+    # ------------------------------------------------------------------
+    # 1. Horizon baseline
+    # ------------------------------------------------------------------
+    g.add(dwg.line(
+        start=(origin_x,            baseline_y),
+        end  =(origin_x + width_mm, baseline_y),
+        stroke=RULE,
+        stroke_width=0.2,
+    ))
+
+    # ------------------------------------------------------------------
+    # 2. Sun arc polyline
+    # ------------------------------------------------------------------
+    arc_coords = [_to_svg(p["azimuth_deg"], p["altitude_deg"]) for p in arc_pts]
+    g.add(dwg.polyline(
+        arc_coords,
+        stroke=GOLD,
+        stroke_width=0.3,
+        fill="none",
+        stroke_linejoin="round",
+        stroke_linecap="round",
+    ))
+
+    # ------------------------------------------------------------------
+    # 3. Solar noon — filled circle at the peak altitude point
+    # ------------------------------------------------------------------
+    peak = max(arc_pts, key=lambda p: p["altitude_deg"])
+    px, py = _to_svg(peak["azimuth_deg"], peak["altitude_deg"])
+    g.add(dwg.circle(center=(px, py), r=0.5, fill=GOLD, stroke="none"))
+
+    # ------------------------------------------------------------------
+    # 4. E / W orientation labels (just below each end of the baseline)
+    # ------------------------------------------------------------------
+    label_y = baseline_y + PT4 + 0.8   # small gap below the rule
+    g.add(dwg.text(
+        "E",
+        insert=(origin_x, label_y),
+        font_size=PT4, font_family=FONT, fill=MUTED, text_anchor="middle",
+    ))
+    g.add(dwg.text(
+        "W",
+        insert=(origin_x + width_mm, label_y),
+        font_size=PT4, font_family=FONT, fill=MUTED, text_anchor="middle",
+    ))
+
+    # ------------------------------------------------------------------
+    # 5. Sunrise — sunset time string, centred below the diagram
+    # ------------------------------------------------------------------
+    time_str = f"{solar.sunrise} — {solar.sunset}"
+    time_y   = label_y + PT4_5 + 1.2
+    g.add(dwg.text(
+        time_str,
+        insert=(origin_x + width_mm / 2.0, time_y),
+        font_size=PT4_5, font_family=FONT, fill=FAINT, text_anchor="middle",
+    ))
+
+    dwg.add(g)
+
+
 def _sample_hillshade(
     hillshade,       # np.ndarray shape (rows, cols), values in [0, 1]
     hs_transform,    # rasterio Affine: (col, row) → (lng, lat) in WGS84
@@ -575,7 +694,16 @@ def render_terrain_svg(
         )
 
     # ------------------------------------------------------------------
-    # 6. Title block (location, date, stats, wordmark) in bottom margin
+    # 6. Sun arc inset — upper-right margin, only with solar enrichment
+    # ------------------------------------------------------------------
+    if enrichment is not None and enrichment.solar is not None:
+        ARC_W, ARC_H = 35.0, 18.0
+        arc_x = width_mm - margin_mm - 2.0 - ARC_W  # 2 mm pad from printable edge
+        arc_y = 2.5                                   # 2.5 mm from top of page
+        _draw_sun_arc(dwg, enrichment.solar, arc_x, arc_y, ARC_W, ARC_H)
+
+    # ------------------------------------------------------------------
+    # 7. Title block (location, date, stats, wordmark) in bottom margin
     # ------------------------------------------------------------------
     add_title_block(
         dwg,
