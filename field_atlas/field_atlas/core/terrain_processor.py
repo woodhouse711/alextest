@@ -25,6 +25,7 @@ def generate_contours(
     elevation: np.ndarray,
     transform,
     interval_m: float = 20.0,
+    preserve_geology: bool = True,
 ) -> list[dict]:
     """Extract contour lines from an elevation grid.
 
@@ -39,6 +40,12 @@ def generate_contours(
         ``y = transform.d * col + transform.e * row + transform.f``
     interval_m:
         Vertical interval between contour levels in metres.
+    preserve_geology:
+        When ``True`` (default), only a minimal Gaussian blur (σ = 0.3 px) is
+        applied before contouring — enough to suppress single-pixel DEM noise
+        while keeping ridgeline V-shapes and drainage-valley inflections intact.
+        When ``False``, a heavier σ = 1.0 blur is used, which rounds corners
+        and produces balloon-like contours.
 
     Returns
     -------
@@ -56,6 +63,18 @@ def generate_contours(
     z_min = float(valid.min())
     z_max = float(valid.max())
 
+    # Apply just enough smoothing to suppress single-pixel DEM noise.
+    # preserve_geology=True → σ=0.3 (nearly raw); False → σ=1.0 (old default).
+    sigma = 0.3 if preserve_geology else 1.0
+    nan_mask = np.isnan(elevation)
+    filled_for_smooth = np.where(nan_mask, 0.0, elevation)
+    weights = np.where(nan_mask, 0.0, 1.0)
+    smoothed_data = gaussian_filter(filled_for_smooth.astype(np.float64), sigma=sigma)
+    smoothed_weights = gaussian_filter(weights.astype(np.float64), sigma=sigma)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        elev_work = (smoothed_data / smoothed_weights).astype(np.float32)
+    elev_work[smoothed_weights == 0.0] = np.nan
+
     # First level is the nearest interval boundary at or above z_min.
     first_level = np.ceil(z_min / interval_m) * interval_m
     levels = np.arange(first_level, z_max, interval_m)
@@ -63,7 +82,7 @@ def generate_contours(
     # Fill NaN with a sentinel below all levels so skimage treats those cells
     # as "outside" and doesn't generate spurious contours around no-data gaps.
     fill_val = z_min - 1.0
-    elev_filled = np.where(np.isnan(elevation), fill_val, elevation)
+    elev_filled = np.where(np.isnan(elev_work), fill_val, elev_work)
 
     results = []
     for level in levels:

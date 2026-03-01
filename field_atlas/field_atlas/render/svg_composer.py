@@ -36,10 +36,14 @@ _WATER_TYPES  = frozenset({"water", "pond", "reservoir"})
 # index = every  5th interval (e.g.  50 m at 10 m interval)
 # minor = every      interval (e.g.  10 m at 10 m interval)
 _CONTOUR_TIERS: dict[str, tuple[str, float]] = {
-    "major": ("#777777", 0.55),
-    "index": ("#999999", 0.40),
-    "minor": ("#C8C8C8", 0.25),
+    "major": ("#666666", 0.45),
+    "index": ("#888888", 0.30),
+    "minor": ("#C8C8C8", 0.15),
 }
+
+# Index contour label style
+_CONTOUR_LABEL_FONT_MM = 1.41   # 4pt
+_CONTOUR_LABEL_CHAR_W  = _CONTOUR_LABEL_FONT_MM * 0.58
 
 
 def _feature_style(ftype: str) -> dict:
@@ -232,26 +236,54 @@ def _infer_interval(contours: list[dict]) -> float:
     return diffs[len(diffs) // 2]
 
 
-def _chaikin_smooth(pts: list[tuple[float, float]]) -> list[tuple[float, float]]:
-    """Apply one iteration of Chaikin's corner-cutting to an open polyline.
+def _douglas_peucker(
+    pts: list[tuple[float, float]],
+    tolerance: float,
+) -> list[tuple[float, float]]:
+    """Iterative Ramer-Douglas-Peucker polyline simplification.
 
-    Each segment (P0, P1) is replaced by two points at the 1/4 and 3/4 marks:
-        Q = 3/4·P0 + 1/4·P1
-        R = 1/4·P0 + 3/4·P1
+    Removes points that deviate less than *tolerance* from the chord between
+    their retained neighbours.  Angular inflections (ridgeline V-shapes,
+    valley bottoms) are preserved because they exceed the threshold; only
+    pixel-staircase rasterisation noise is eliminated.
 
-    The first and last points are preserved so polyline endpoints stay fixed.
-    Polylines with fewer than 3 points are returned unchanged.
+    Uses an explicit stack to avoid Python recursion limits on long paths.
     """
     if len(pts) < 3:
         return pts
-    out = [pts[0]]
-    for i in range(len(pts) - 1):
-        ax, ay = pts[i]
-        bx, by = pts[i + 1]
-        out.append((0.75 * ax + 0.25 * bx, 0.75 * ay + 0.25 * by))
-        out.append((0.25 * ax + 0.75 * bx, 0.25 * ay + 0.75 * by))
-    out.append(pts[-1])
-    return out
+
+    def _perp_dist(px: float, py: float,
+                   ax: float, ay: float,
+                   bx: float, by: float) -> float:
+        dx, dy = bx - ax, by - ay
+        d2 = dx * dx + dy * dy
+        if d2 == 0.0:
+            return ((px - ax) ** 2 + (py - ay) ** 2) ** 0.5
+        t = max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / d2))
+        return ((px - ax - t * dx) ** 2 + (py - ay - t * dy) ** 2) ** 0.5
+
+    n = len(pts)
+    keep = [False] * n
+    keep[0] = keep[-1] = True
+
+    stack = [(0, n - 1)]
+    while stack:
+        first, last = stack.pop()
+        if last <= first + 1:
+            continue
+        ax, ay = pts[first]
+        bx, by = pts[last]
+        max_d, max_i = 0.0, first
+        for i in range(first + 1, last):
+            d = _perp_dist(pts[i][0], pts[i][1], ax, ay, bx, by)
+            if d > max_d:
+                max_d, max_i = d, i
+        if max_d > tolerance:
+            keep[max_i] = True
+            stack.append((first, max_i))
+            stack.append((max_i, last))
+
+    return [p for p, k in zip(pts, keep) if k]
 
 
 def _catmull_rom_smooth(
@@ -655,21 +687,27 @@ def render_terrain_svg(
     # ------------------------------------------------------------------
     # 4. Contour lines — three-tier visual hierarchy
     # ------------------------------------------------------------------
+    import math as _cmath
+
     interval_m     = _infer_interval(contours)
     major_interval = interval_m * 10.0   # e.g. 100 m at 10 m interval
     index_interval = interval_m * 5.0    # e.g.  50 m at 10 m interval
 
-    use_hillshade = (
-        hillshade is not None
-        and hillshade_transform is not None
-        and transformer is not None
-    )
+    # Map extents in SVG mm — used for label clipping.
+    map_x0 = offset_x
+    map_y0 = offset_y
+    map_x1 = offset_x + map_w_mm
+    map_y1 = offset_y + map_h_mm
 
     def _snap(elev: float, step: float) -> bool:
         """True if *elev* is an integer multiple of *step* (float-safe)."""
         return step > 0 and abs(round(elev / step) * step - elev) < 0.1
 
     g_contours = dwg.g(id="contours")
+
+    # Accumulate the best (longest) label candidate for each index elevation.
+    # key: elevation float → value: (svg_cx, svg_cy, angle_deg, path_point_count)
+    _index_label_best: dict[float, tuple] = {}
 
     for contour in contours:
         elev = contour["elevation"]
@@ -689,33 +727,75 @@ def render_terrain_svg(
             if len(path) < 2:
                 continue
 
-            # Convert to SVG coords then apply one pass of Chaikin smoothing
-            # to soften the grid-derived jaggedness.
-            pts = [proj_to_svg(xy[0], xy[1]) for xy in path]
-            pts = _chaikin_smooth(pts)
+            # Douglas-Peucker in UTM metres (tolerance = 0.5 m) before
+            # projecting — removes pixel-staircase noise while keeping
+            # ridgeline V-shapes and valley inflections intact.
+            utm_pts = [(float(xy[0]), float(xy[1])) for xy in path]
+            utm_pts = _douglas_peucker(utm_pts, tolerance=0.5)
+            if len(utm_pts) < 2:
+                continue
 
-            pl = dwg.polyline(
+            pts = [proj_to_svg(xy[0], xy[1]) for xy in utm_pts]
+
+            g_contours.add(dwg.polyline(
                 pts,
                 stroke=stroke_color,
                 stroke_width=stroke_width,
                 fill="none",
+                stroke_linecap="round",
                 stroke_linejoin="round",
-            )
+            ))
 
-            # Hillshade colour: sample at the path midpoint (UTM coords).
-            # Sunlit slopes (hs > 0.6) are overridden to ~220-gray (#DCDCDC)
-            # so the contour network visibly recedes on bright faces.
-            if use_hillshade:
-                mid = path[len(path) // 2]
-                hs = _sample_hillshade(
-                    hillshade, hillshade_transform, transformer,
-                    mid[0], mid[1],
-                )
-                if hs > 0.6:
-                    pl["stroke"] = "#DCDCDC"
+            # Collect label placement for index contours: track the longest
+            # path (most SVG points) at each elevation and record the
+            # midpoint position + local tangent angle.
+            if tier == "index" and len(pts) >= 12:
+                n_pts = len(pts)
+                current_best = _index_label_best.get(elev)
+                if current_best is None or n_pts > current_best[3]:
+                    mid = n_pts // 2
+                    # Stable tangent: 2-point lookahead/lookbehind.
+                    k = min(2, mid, n_pts - mid - 1)
+                    p0 = pts[max(0, mid - k)]
+                    p1 = pts[min(n_pts - 1, mid + k)]
+                    angle = _cmath.degrees(_cmath.atan2(p1[1] - p0[1], p1[0] - p0[0]))
+                    # Keep text upright: flip if it would render upside-down.
+                    if angle > 90.0:
+                        angle -= 180.0
+                    elif angle < -90.0:
+                        angle += 180.0
+                    cx, cy = pts[mid]
+                    _index_label_best[elev] = (cx, cy, angle, n_pts)
 
-            g_contours.add(pl)
+    # --- Index contour elevation labels (renders above the polylines) --------
+    g_labels = dwg.g(id="contour-labels")
+    for elev, (cx, cy, angle_deg, _) in _index_label_best.items():
+        # Skip labels whose centre falls outside the visible map.
+        if not (map_x0 <= cx <= map_x1 and map_y0 <= cy <= map_y1):
+            continue
+        label = str(int(elev))
+        tw = len(label) * _CONTOUR_LABEL_CHAR_W + 0.8   # text width + h-padding
+        th = _CONTOUR_LABEL_FONT_MM + 0.5                # text height + v-padding
+        # Group with rotation around the label centre.
+        g_lbl = dwg.g(transform=f"rotate({angle_deg:.1f},{cx:.3f},{cy:.3f})")
+        # White knockout rect so the label reads over intersecting contours.
+        g_lbl.add(dwg.rect(
+            insert=(cx - tw / 2, cy - th / 2),
+            size=(tw, th),
+            fill="white",
+            stroke="none",
+        ))
+        g_lbl.add(dwg.text(
+            label,
+            insert=(cx, cy + _CONTOUR_LABEL_FONT_MM * 0.35),
+            text_anchor="middle",
+            font_family="Arial, Helvetica, sans-serif",
+            font_size=_CONTOUR_LABEL_FONT_MM,
+            fill=_CONTOUR_TIERS["index"][0],
+        ))
+        g_labels.add(g_lbl)
 
+    g_contours.add(g_labels)
     dwg.add(g_contours)
 
     # ------------------------------------------------------------------

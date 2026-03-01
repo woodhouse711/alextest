@@ -23,7 +23,7 @@ import click
 from field_atlas.core.dem_fetcher import fetch_dem, load_dem
 from field_atlas.core.gpx_parser import TrackData, padded_bounds, parse_gpx
 from field_atlas.core.projection import get_projection, project_bounds, project_points
-from field_atlas.core.terrain_processor import generate_contours, generate_hillshade, smooth_elevation
+from field_atlas.core.terrain_processor import generate_contours, generate_hillshade
 from field_atlas.enrichment.features import load_features_from_file
 from field_atlas.enrichment.models import EnrichmentData, derive_location_name, enrich, format_info_block
 from field_atlas.enrichment.weather import load_weather_from_file
@@ -299,7 +299,8 @@ def render(
             click.echo(f"Error: DEM fetch failed — {exc}", err=True)
             sys.exit(1)
 
-    elevation = smooth_elevation(elevation, sigma=0.8)
+    # Hillshade from the raw elevation (preserve_geology=True smoothing inside
+    # generate_contours() is σ=0.3, gentle enough for hillshade too).
     hillshade = generate_hillshade(elevation)
 
     # ------------------------------------------------------------------
