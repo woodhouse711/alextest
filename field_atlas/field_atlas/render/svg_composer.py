@@ -457,36 +457,44 @@ def _catmull_rom_smooth(
     return result
 
 
+# Catmull-Rom tangent scale: 0.3 gives gentle smoothing that follows GPS
+# points closely and avoids overshoot on sharp bends.
+_SPLINE_TENSION = 0.3
+
+
 def _cr_bezier_cp(
-    pts: list[tuple[float, float]], i: int
+    pts: list[tuple[float, float]], i: int, tension: float = _SPLINE_TENSION
 ) -> tuple[tuple[float, float], tuple[float, float]]:
     """Return the two cubic Bézier control points for segment pts[i]→pts[i+1].
 
     Uses the Catmull-Rom ↔ cubic-Bézier conversion so adjacent segments share
     tangent directions and produce a G1-continuous (smooth-joining) spline.
     Boundary segments duplicate the nearest endpoint as a phantom neighbour.
+    The *tension* parameter scales the tangent vectors (1.0 = standard
+    Catmull-Rom; 0.3 = gentle curves that hug the GPS track closely).
     """
     n = len(pts)
     p0 = pts[max(0, i - 1)]
     p1 = pts[i]
     p2 = pts[i + 1]
     p3 = pts[min(n - 1, i + 2)]
-    cp1 = (p1[0] + (p2[0] - p0[0]) / 6.0, p1[1] + (p2[1] - p0[1]) / 6.0)
-    cp2 = (p2[0] - (p3[0] - p1[0]) / 6.0, p2[1] - (p3[1] - p1[1]) / 6.0)
+    scale = tension / 6.0
+    cp1 = (p1[0] + (p2[0] - p0[0]) * scale, p1[1] + (p2[1] - p0[1]) * scale)
+    cp2 = (p2[0] - (p3[0] - p1[0]) * scale, p2[1] - (p3[1] - p1[1]) * scale)
     return cp1, cp2
 
 
-def _catmull_rom_path(pts: list[tuple[float, float]]) -> str:
+def _catmull_rom_path(pts: list[tuple[float, float]], tension: float = _SPLINE_TENSION) -> str:
     """Build a single smooth SVG path string from a Catmull-Rom spline.
 
-    Produces one cubic Bézier ``C`` command per segment so the result is
-    identical in shape to the per-segment curves used for speed coloring.
+    Produces one cubic Bézier ``C`` command per segment. The *tension*
+    parameter is forwarded to :func:`_cr_bezier_cp`.
     """
     if len(pts) < 2:
         return ""
     parts = [f"M {pts[0][0]:.4f},{pts[0][1]:.4f}"]
     for i in range(len(pts) - 1):
-        (cp1x, cp1y), (cp2x, cp2y) = _cr_bezier_cp(pts, i)
+        (cp1x, cp1y), (cp2x, cp2y) = _cr_bezier_cp(pts, i, tension)
         p2 = pts[i + 1]
         parts.append(
             f"C {cp1x:.4f},{cp1y:.4f} {cp2x:.4f},{cp2y:.4f} {p2[0]:.4f},{p2[1]:.4f}"
@@ -766,8 +774,8 @@ def render_terrain_svg(
     bottom_margin_mm: float = 76.2,
     osm_vectors: OSMVectors | None = None,
     segment_speeds: list[float] | None = None,
-    route_palette: str = "maroon_turquoise",
-    route_width: float = 1.35,
+    route_palette: str = "coastal",
+    route_width: float = 1.8,
 ) -> str:
     """Render contour lines and a hiking route as a print-ready SVG.
 
@@ -1017,14 +1025,11 @@ def render_terrain_svg(
         route_pts_proj = [(pt["x"], pt["y"]) for pt in route_points]
         route_pts = [proj_to_svg(x, y) for x, y in route_pts_proj]
 
-        _casing_w = route_width * (2.25 / 1.35)   # scales with route_width
+        # Route stroke: 1.8 mm core, 2.7 mm white casing (1.5× ratio)
+        _casing_w = route_width * (2.7 / 1.8)
         _core_w   = route_width
 
         if _use_speed_color:
-            # Speed-colored rendering: no Catmull-Rom (segments must stay
-            # aligned with the speed list).  Round linecaps make adjacent
-            # segments overlap slightly and appear as a continuous line.
-
             # Percentile-based normalisation (5th → 0.0, 95th → 1.0).
             _sorted = sorted(_speeds)
             _n = len(_sorted)
@@ -1037,7 +1042,7 @@ def render_terrain_svg(
 
             _palette = get_palette(route_palette)
 
-            # Pass 1 — white casing: smooth Catmull-Rom path at 1.5× width.
+            # Pass 1 — white casing: single smooth Bézier path.
             g_route.add(dwg.path(
                 d=_catmull_rom_path(route_pts),
                 stroke="#FFFFFF",
@@ -1047,38 +1052,80 @@ def render_terrain_svg(
                 stroke_linecap="round",
             ))
 
-            # Pass 2 — per-segment Catmull-Rom Bézier curves with linearGradient
-            # strokes.  Each curve is a cubic Bézier C command whose control
-            # points are derived from the same Catmull-Rom formula as the casing,
-            # so every joint is G1-continuous (tangent-continuous).  The gradient
-            # runs from this segment's color to the next, eliminating hard edges.
-            _colors = [interpolate_color(n, _palette) for n in _norm]
+            # Pass 2 — single smooth Bézier path with one continuous gradient.
+            #
+            # Strategy: build per-point speed colors and cumulative-distance
+            # offsets, then create ONE linearGradient with a stop per point
+            # (sampled to ≤ 500 stops for very dense tracks).  The gradient
+            # direction follows the route's bounding-box diagonal so the color
+            # sweep reads roughly left-to-right / start-to-end.  SVG gradients
+            # are linear in screen space, not along-path, but with enough stops
+            # the route reads as one seamless calligraphic stroke.
+
+            # Per-point speed: average adjacent segment speeds at interior pts.
+            _n_pts = len(route_pts)
+            _point_norms: list[float] = []
+            for _pi in range(_n_pts):
+                if _pi == 0:
+                    _point_norms.append(_norm[0])
+                elif _pi == _n_pts - 1:
+                    _point_norms.append(_norm[-1])
+                else:
+                    _point_norms.append((_norm[_pi - 1] + _norm[_pi]) / 2.0)
+
+            _point_colors = [interpolate_color(v, _palette) for v in _point_norms]
+
+            # Cumulative arc-length offsets (0.0 → 1.0).
+            _cum = [0.0]
+            for _pi in range(1, _n_pts):
+                dx = route_pts[_pi][0] - route_pts[_pi - 1][0]
+                dy = route_pts[_pi][1] - route_pts[_pi - 1][1]
+                _cum.append(_cum[-1] + _math.hypot(dx, dy))
+            _total = _cum[-1] or 1.0
+            _offsets = [c / _total for c in _cum]
+
+            # Sample indices (preserve first and last; at most 500 stops).
+            _MAX_STOPS = 500
+            if _n_pts <= _MAX_STOPS:
+                _stop_idx = list(range(_n_pts))
+            else:
+                _step = (_n_pts - 1) / (_MAX_STOPS - 1)
+                _stop_idx = [int(round(i * _step)) for i in range(_MAX_STOPS)]
+                _stop_idx[0] = 0
+                _stop_idx[-1] = _n_pts - 1
+
+            # Bounding-box diagonal as gradient direction (userSpaceOnUse).
+            _xs = [p[0] for p in route_pts]
+            _ys = [p[1] for p in route_pts]
+            _gx1, _gy1 = min(_xs), min(_ys)
+            _gx2, _gy2 = max(_xs), max(_ys)
+            # Guard against degenerate zero-length gradient vector.
+            if abs(_gx2 - _gx1) < 0.01 and abs(_gy2 - _gy1) < 0.01:
+                _gx2 += 0.01
+
+            _route_grad = dwg.defs.add(dwg.linearGradient(
+                id="route-speed-grad",
+                gradientUnits="userSpaceOnUse",
+                x1=f"{_gx1:.4f}", y1=f"{_gy1:.4f}",
+                x2=f"{_gx2:.4f}", y2=f"{_gy2:.4f}",
+            ))
+            _prev_offset = -1.0
+            for _si in _stop_idx:
+                _off = round(_offsets[_si], 6)
+                if _off <= _prev_offset:
+                    _off = _prev_offset + 1e-6  # ensure monotone stops
+                _route_grad.add_stop_color(_off, _point_colors[_si])
+                _prev_offset = _off
 
             g_segs = dwg.g(id="route-speed", clip_path="url(#map-area)")
-            for i, c0 in enumerate(_colors):
-                p0, p1 = route_pts[i], route_pts[i + 1]
-                c1 = _colors[i + 1] if i + 1 < len(_colors) else c0
-                (cp1x, cp1y), (cp2x, cp2y) = _cr_bezier_cp(route_pts, i)
-
-                grad = dwg.defs.add(dwg.linearGradient(
-                    id=f"rsg{i}",
-                    gradientUnits="userSpaceOnUse",
-                    x1=f"{p0[0]:.4f}", y1=f"{p0[1]:.4f}",
-                    x2=f"{p1[0]:.4f}", y2=f"{p1[1]:.4f}",
-                ))
-                grad.add_stop_color(0,   c0)
-                grad.add_stop_color(1.0, c1)
-
-                g_segs.add(dwg.path(
-                    d=(f"M {p0[0]:.4f},{p0[1]:.4f} "
-                       f"C {cp1x:.4f},{cp1y:.4f} {cp2x:.4f},{cp2y:.4f} "
-                       f"{p1[0]:.4f},{p1[1]:.4f}"),
-                    stroke=f"url(#rsg{i})",
-                    stroke_width=_core_w,
-                    stroke_linecap="round",
-                    stroke_linejoin="round",
-                    fill="none",
-                ))
+            g_segs.add(dwg.path(
+                d=_catmull_rom_path(route_pts),
+                stroke="url(#route-speed-grad)",
+                stroke_width=_core_w,
+                stroke_linecap="round",
+                stroke_linejoin="round",
+                fill="none",
+            ))
             g_route.add(g_segs)
 
         else:
@@ -1196,10 +1243,12 @@ def render_terrain_svg(
         legend_y = height_mm - 10.5   # sits just above the bottom page edge
 
         # Define a horizontal linearGradient for the legend bar.
+        # Use HSL-interpolated stops so the bar matches the route coloring.
+        _LEGEND_STOPS = 21
         _grad = dwg.linearGradient(id="speed-legend-grad", x1="0%", y1="0%", x2="100%", y2="0%")
-        _grad.add_stop_color(0,   _palette.slow_color)
-        _grad.add_stop_color(0.5, _palette.mid_color)
-        _grad.add_stop_color(1.0, _palette.fast_color)
+        for _li in range(_LEGEND_STOPS):
+            _lt = _li / (_LEGEND_STOPS - 1)
+            _grad.add_stop_color(_lt, interpolate_color(_lt, _palette))
         dwg.defs.add(_grad)
 
         g_legend = dwg.g(id="speed-legend")

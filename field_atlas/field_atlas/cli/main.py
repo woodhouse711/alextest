@@ -199,14 +199,14 @@ def cli() -> None:
 )
 @click.option(
     "--route-palette",
-    default="maroon_turquoise",
+    default="coastal",
     show_default=True,
     type=click.Choice(list(PALETTES)),
     help="Color palette for speed-encoded route coloring.",
 )
 @click.option(
     "--route-width",
-    default=1.35,
+    default=1.8,
     show_default=True,
     metavar="MM",
     help="Base route line width in millimetres.",
