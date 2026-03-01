@@ -154,20 +154,6 @@ def cli() -> None:
     help="Fractional padding added to each edge of the bounding box.",
 )
 @click.option(
-    "--width",
-    default=18.0,
-    show_default=True,
-    metavar="INCHES",
-    help="Print canvas width.",
-)
-@click.option(
-    "--height",
-    default=24.0,
-    show_default=True,
-    metavar="INCHES",
-    help="Print canvas height.",
-)
-@click.option(
     "--dem-file",
     default=None,
     type=click.Path(exists=True, dir_okay=False, readable=True),
@@ -216,8 +202,6 @@ def render(
     resolution: int,
     contour_interval: float,
     padding: float,
-    width: float,
-    height: float,
     dem_file: str | None,
     weather_file: str | None,
     features_file: str | None,
@@ -374,14 +358,30 @@ def render(
     # ------------------------------------------------------------------
     # Step 9: Render SVG
     # ------------------------------------------------------------------
+    # Auto-orient: landscape (24×18 in) if the route footprint is wider than
+    # tall, portrait (18×24 in) otherwise.  Margins: 1.5" sides + top, 3" base.
+    _MARGIN_MM        = 1.5 * 25.4   # 38.1 mm
+    _BOTTOM_MARGIN_MM = 3.0 * 25.4   # 76.2 mm
+    _proj_w = projected_bounds["max_x"] - projected_bounds["min_x"]
+    _proj_h = projected_bounds["max_y"] - projected_bounds["min_y"]
+    if _proj_w > _proj_h:
+        canvas_w_mm, canvas_h_mm = 24.0 * 25.4, 18.0 * 25.4
+        orientation = "landscape"
+    else:
+        canvas_w_mm, canvas_h_mm = 18.0 * 25.4, 24.0 * 25.4
+        orientation = "portrait"
+    click.echo(f"  Canvas:   {orientation} ({canvas_w_mm/25.4:.0f}×{canvas_h_mm/25.4:.0f} in)")
+
     click.echo("Composing SVG…")
     svg_path = render_terrain_svg(
         contours=contours,
         route_points=route_points_utm,
         bounds=projected_bounds,
         output_path=output,
-        width_mm=width * 25.4,
-        height_mm=height * 25.4,
+        width_mm=canvas_w_mm,
+        height_mm=canvas_h_mm,
+        margin_mm=_MARGIN_MM,
+        bottom_margin_mm=_BOTTOM_MARGIN_MM,
         enrichment=enrichment,
         transformer=transformer,
         hillshade=hillshade,

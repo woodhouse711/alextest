@@ -166,10 +166,29 @@ def fetch_osm_vectors(bounds: dict) -> OSMVectors:
     trails: list[OSMWay] = []
 
     for el in payload["elements"]:
-        if el.get("type") not in ("way", "relation"):
+        el_type = el.get("type")
+        if el_type not in ("way", "relation"):
             continue
 
-        tags = el.get("tags", {})
+        tags     = el.get("tags", {})
+        natural  = tags.get("natural")
+
+        # Relations (multipolygons) don't carry a top-level geometry array —
+        # geometry lives inside each member way.  Handle water relations first
+        # so large lakes stored as multipolygons are captured.
+        if el_type == "relation":
+            if natural == "water":
+                for member in el.get("members", []):
+                    if member.get("role") in ("outer", "") and member.get("type") == "way":
+                        mgeom = [
+                            [float(n["lat"]), float(n["lon"])]
+                            for n in member.get("geometry", [])
+                            if "lat" in n and "lon" in n
+                        ]
+                        if mgeom and _is_closed(mgeom):
+                            water_areas.append(mgeom)
+            continue  # relations only used for water; skip other tags
+
         geom = _extract_geometry(el)
         if not geom:
             continue
@@ -178,7 +197,6 @@ def fetch_osm_vectors(bounds: dict) -> OSMVectors:
         name    = tags.get("name") or tags.get("name:en") or None
         highway  = tags.get("highway")
         waterway = tags.get("waterway")
-        natural  = tags.get("natural")
 
         if natural == "water":
             if _is_closed(geom):

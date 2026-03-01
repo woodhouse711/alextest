@@ -36,10 +36,12 @@ _WATER_TYPES  = frozenset({"water", "pond", "reservoir"})
 # major = every 10th interval (e.g. 100 m at 10 m interval)
 # index = every  5th interval (e.g.  50 m at 10 m interval)
 # minor = every      interval (e.g.  10 m at 10 m interval)
+# All tiers use 90% black (#1A1A1A); weights are close together so the
+# hierarchy reads subtly rather than dominating the sheet.
 _CONTOUR_TIERS: dict[str, tuple[str, float]] = {
-    "major": ("#666666", 0.45),
-    "index": ("#888888", 0.30),
-    "minor": ("#C8C8C8", 0.15),
+    "major": ("#1A1A1A", 0.30),
+    "index": ("#1A1A1A", 0.22),
+    "minor": ("#1A1A1A", 0.12),
 }
 
 # Index contour label style
@@ -716,7 +718,7 @@ def render_terrain_svg(
     output_path: str,
     width_mm: float = 457.2,
     height_mm: float = 609.6,
-    margin_mm: float = 25.4,
+    margin_mm: float = 38.1,
     enrichment: EnrichmentData | None = None,
     transformer: pyproj.Transformer | None = None,
     hillshade=None,
@@ -728,7 +730,7 @@ def render_terrain_svg(
     centroid_lat: float = 0.0,
     centroid_lng: float = 0.0,
     duration_hours: float | None = None,
-    bottom_margin_mm: float = 88.9,
+    bottom_margin_mm: float = 76.2,
     osm_vectors: OSMVectors | None = None,
 ) -> str:
     """Render contour lines and a hiking route as a print-ready SVG.
@@ -755,7 +757,7 @@ def render_terrain_svg(
     height_mm:
         Canvas height in millimetres (default 609.6 = 24 in).
     margin_mm:
-        Uniform margin on all four sides in millimetres (default 25.4 = 1 in).
+        Uniform margin on top and both sides in millimetres (default 38.1 = 1.5 in).
     hillshade:
         Optional float32 array (same grid as the DEM, values in [0, 1]) from
         :func:`~field_atlas.core.terrain_processor.generate_hillshade`.  When
@@ -854,7 +856,7 @@ def render_terrain_svg(
         """True if *elev* is an integer multiple of *step* (float-safe)."""
         return step > 0 and abs(round(elev / step) * step - elev) < 0.1
 
-    g_contours = dwg.g(id="contours")
+    g_contours = dwg.g(id="contours", clip_path="url(#map-area)")
 
     # Accumulate the best (longest) label candidate for each index elevation.
     # key: elevation float → value: (svg_cx, svg_cy, angle_deg, path_point_count)
