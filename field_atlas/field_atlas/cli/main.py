@@ -32,6 +32,7 @@ from field_atlas.enrichment.osm_vectors import (
     save_osm_vectors_to_file,
 )
 from field_atlas.enrichment.weather import load_weather_from_file
+from field_atlas.render.color_palettes import PALETTES
 from field_atlas.render.svg_composer import render_terrain_svg
 
 # Default cache directory (relative to cwd, mirroring output/)
@@ -196,6 +197,20 @@ def cli() -> None:
     metavar="TEXT",
     help="User notes about the hike, stored in the enrichment record.",
 )
+@click.option(
+    "--route-palette",
+    default="maroon_turquoise",
+    show_default=True,
+    type=click.Choice(list(PALETTES)),
+    help="Color palette for speed-encoded route coloring.",
+)
+@click.option(
+    "--route-width",
+    default=1.35,
+    show_default=True,
+    metavar="MM",
+    help="Base route line width in millimetres.",
+)
 def render(
     gpx_file: str,
     output: str | None,
@@ -208,6 +223,8 @@ def render(
     vectors_file: str | None,
     date: str | None,
     notes: str | None,
+    route_palette: str,
+    route_width: float,
 ) -> None:
     """Render a terrain map SVG from GPX_FILE.
 
@@ -394,6 +411,9 @@ def render(
         centroid_lng=centroid_lng,
         duration_hours=track.duration_hours,
         osm_vectors=osm_vectors,
+        segment_speeds=track.segment_speeds,
+        route_palette=route_palette,
+        route_width=route_width,
     )
 
     # ------------------------------------------------------------------
@@ -422,6 +442,14 @@ def render(
         f"  Distance: {track.total_distance_km:.1f} km"
         f" | Gain: {track.elevation_gain_m:,.0f}m"
     )
+
+    if track.segment_speeds:
+        _sp = track.segment_speeds
+        _mean = sum(_sp) / len(_sp)
+        click.echo(
+            f"  Speed:    {min(_sp):.1f} — {max(_sp):.1f} km/h"
+            f" (mean {_mean:.1f}) · palette: {route_palette}"
+        )
 
     if enrichment is not None:
         info = format_info_block(enrichment, route_points=track.points)

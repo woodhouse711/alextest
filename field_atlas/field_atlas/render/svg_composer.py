@@ -730,6 +730,9 @@ def render_terrain_svg(
     duration_hours: float | None = None,
     bottom_margin_mm: float = 76.2,
     osm_vectors: OSMVectors | None = None,
+    segment_speeds: list[float] | None = None,
+    route_palette: str = "maroon_turquoise",
+    route_width: float = 1.35,
 ) -> str:
     """Render contour lines and a hiking route as a print-ready SVG.
 
@@ -966,6 +969,12 @@ def render_terrain_svg(
     # 7. Route polyline
     # ------------------------------------------------------------------
     import math as _math
+    from field_atlas.render.color_palettes import PALETTES, get_palette, interpolate_color
+
+    # Determine whether speed coloring is active.
+    # segment_speeds must have exactly len(route_points)-1 entries to be usable.
+    _speeds = segment_speeds or []
+    _use_speed_color = bool(_speeds) and len(_speeds) == len(route_points) - 1
 
     if len(route_points) >= 2:
         g_route = dwg.g(id="route")
@@ -973,29 +982,74 @@ def render_terrain_svg(
         route_pts_proj = [(pt["x"], pt["y"]) for pt in route_points]
         route_pts = [proj_to_svg(x, y) for x, y in route_pts_proj]
 
-        # Smooth sparse routes (< 100 waypoints) with Catmull-Rom spline
-        # to remove the angular GPS-stepping artefacts.
-        if len(route_pts) < 100:
-            route_pts = _catmull_rom_smooth(route_pts)
+        _casing_w = route_width * (2.25 / 1.35)   # scales with route_width
+        _core_w   = route_width
 
-        # Pass 1 — white casing: makes the route pop off dense contours.
-        g_route.add(dwg.polyline(
-            route_pts,
-            stroke="#FFFFFF",
-            stroke_width=1.5,
-            fill="none",
-            stroke_linejoin="round",
-            stroke_linecap="round",
-        ))
-        # Pass 2 — blue route on top.
-        g_route.add(dwg.polyline(
-            route_pts,
-            stroke="#2E75B6",
-            stroke_width=0.9,
-            fill="none",
-            stroke_linejoin="round",
-            stroke_linecap="round",
-        ))
+        if _use_speed_color:
+            # Speed-colored rendering: no Catmull-Rom (segments must stay
+            # aligned with the speed list).  Round linecaps make adjacent
+            # segments overlap slightly and appear as a continuous line.
+
+            # Percentile-based normalisation (5th → 0.0, 95th → 1.0).
+            _sorted = sorted(_speeds)
+            _n = len(_sorted)
+            _lo = _sorted[max(0, int(_n * 0.05))]
+            _hi = _sorted[min(_n - 1, int(_n * 0.95))]
+            if _hi <= _lo:
+                _norm = [0.5] * _n
+            else:
+                _norm = [max(0.0, min(1.0, (s - _lo) / (_hi - _lo))) for s in _speeds]
+
+            _palette = get_palette(route_palette)
+
+            # Pass 1 — white casing (full polyline at 1.5× width).
+            g_route.add(dwg.polyline(
+                route_pts,
+                stroke="#FFFFFF",
+                stroke_width=_casing_w,
+                fill="none",
+                stroke_linejoin="round",
+                stroke_linecap="round",
+            ))
+
+            # Pass 2 — individual colored segments.
+            g_segs = dwg.g(id="route-speed", clip_path="url(#map-area)")
+            for i, norm_val in enumerate(_norm):
+                color = interpolate_color(norm_val, _palette)
+                p0, p1 = route_pts[i], route_pts[i + 1]
+                g_segs.add(dwg.line(
+                    start=p0,
+                    end=p1,
+                    stroke=color,
+                    stroke_width=_core_w,
+                    stroke_linecap="round",
+                    stroke_linejoin="round",
+                ))
+            g_route.add(g_segs)
+
+        else:
+            # Solid fallback — smooth sparse routes with Catmull-Rom.
+            if len(route_pts) < 100:
+                route_pts = _catmull_rom_smooth(route_pts)
+
+            # Pass 1 — white casing.
+            g_route.add(dwg.polyline(
+                route_pts,
+                stroke="#FFFFFF",
+                stroke_width=_casing_w,
+                fill="none",
+                stroke_linejoin="round",
+                stroke_linecap="round",
+            ))
+            # Pass 2 — solid blue.
+            g_route.add(dwg.polyline(
+                route_pts,
+                stroke="#2E75B6",
+                stroke_width=_core_w,
+                fill="none",
+                stroke_linejoin="round",
+                stroke_linecap="round",
+            ))
 
         # Loop detection: start and end within 50 m → single shared marker.
         p0, p1 = route_pts_proj[0], route_pts_proj[-1]
@@ -1077,6 +1131,53 @@ def render_terrain_svg(
         bottom_margin_mm=bottom_margin_mm,
         enrichment=enrichment,
     )
+
+    # ------------------------------------------------------------------
+    # 8. Speed legend — only when speed data is available
+    # ------------------------------------------------------------------
+    if _use_speed_color:
+        _palette = get_palette(route_palette)
+        LEGEND_W, LEGEND_H = 20.0, 2.0
+        legend_x = width_mm - margin_mm - LEGEND_W
+        legend_y = height_mm - 10.5   # sits just above the bottom page edge
+
+        # Define a horizontal linearGradient for the legend bar.
+        _grad = dwg.linearGradient(id="speed-legend-grad", x1="0%", y1="0%", x2="100%", y2="0%")
+        _grad.add_stop_color(0,   _palette.slow_color)
+        _grad.add_stop_color(0.5, _palette.mid_color)
+        _grad.add_stop_color(1.0, _palette.fast_color)
+        dwg.defs.add(_grad)
+
+        g_legend = dwg.g(id="speed-legend")
+        g_legend.add(dwg.rect(
+            insert=(legend_x, legend_y),
+            size=(LEGEND_W, LEGEND_H),
+            fill="url(#speed-legend-grad)",
+            rx=0.5, ry=0.5,
+        ))
+
+        _lbl_y   = legend_y + LEGEND_H + 1.8
+        _lbl_sz  = 1.41    # 4pt
+        _lbl_col = "#AAAAAA"
+        g_legend.add(dwg.text(
+            "SLOW",
+            insert=(legend_x, _lbl_y),
+            text_anchor="start",
+            font_family="Liberation Sans, Arial, sans-serif",
+            font_size=_lbl_sz,
+            fill=_lbl_col,
+            **{"letter-spacing": "0.05em"},
+        ))
+        g_legend.add(dwg.text(
+            "FAST",
+            insert=(legend_x + LEGEND_W, _lbl_y),
+            text_anchor="end",
+            font_family="Liberation Sans, Arial, sans-serif",
+            font_size=_lbl_sz,
+            fill=_lbl_col,
+            **{"letter-spacing": "0.05em"},
+        ))
+        dwg.add(g_legend)
 
     dwg.save()
     return str(out.resolve())

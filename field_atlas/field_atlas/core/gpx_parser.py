@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import math
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -35,6 +35,7 @@ class TrackData:
     start_time: Optional[datetime]
     end_time: Optional[datetime]
     duration_hours: Optional[float]
+    segment_speeds: list[float] = field(default_factory=list)  # km/h per segment; empty if no timestamps
 
     def __str__(self) -> str:
         dur = f"{self.duration_hours:.2f} h" if self.duration_hours is not None else "n/a"
@@ -67,6 +68,52 @@ def _haversine(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
     dlambda = math.radians(lng2 - lng1)
     a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
     return 2 * _EARTH_RADIUS_KM * math.asin(math.sqrt(a))
+
+
+def compute_segment_speeds(points: list[dict]) -> list[float]:
+    """Compute per-segment speed in km/h from a list of timestamped trackpoints.
+
+    Parameters
+    ----------
+    points:
+        List of point dicts with ``lat``, ``lng``, and ``time`` keys, as
+        returned by :func:`parse_gpx`.
+
+    Returns
+    -------
+    list[float]
+        One speed value per segment (``len == len(points) - 1``), smoothed
+        with a 5-point rolling average.  Returns an **empty list** if any
+        timestamp is missing, or if there are fewer than two points.
+    """
+    if len(points) < 2:
+        return []
+
+    # Abort immediately if any timestamp is absent.
+    for pt in points:
+        if pt.get("time") is None:
+            return []
+
+    raw: list[float] = []
+    for i in range(1, len(points)):
+        p0, p1 = points[i - 1], points[i]
+        dt_s = (p1["time"] - p0["time"]).total_seconds()
+        if dt_s < 0:
+            return []  # clock went backwards — unusable track
+        dist_km = _haversine(p0["lat"], p0["lng"], p1["lat"], p1["lng"])
+        speed = (dist_km / (dt_s / 3600.0)) if dt_s > 0 else 0.0
+        raw.append(speed)
+
+    # Rolling average over a window of 5 (centred), to smooth GPS jitter.
+    half = 2
+    smoothed: list[float] = []
+    n = len(raw)
+    for i in range(n):
+        lo = max(0, i - half)
+        hi = min(n, i + half + 1)
+        smoothed.append(sum(raw[lo:hi]) / (hi - lo))
+
+    return smoothed
 
 
 # ---------------------------------------------------------------------------
@@ -193,6 +240,7 @@ def parse_gpx(filepath: str) -> TrackData:
         start_time=start_time,
         end_time=end_time,
         duration_hours=duration_hours,
+        segment_speeds=compute_segment_speeds(points),
     )
 
 
