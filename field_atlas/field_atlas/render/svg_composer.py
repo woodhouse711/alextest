@@ -727,11 +727,15 @@ def render_terrain_svg(
             if len(path) < 2:
                 continue
 
-            # Douglas-Peucker in UTM metres (tolerance = 0.5 m) before
-            # projecting — removes pixel-staircase noise while keeping
-            # ridgeline V-shapes and valley inflections intact.
+            # Douglas-Peucker in UTM metres before projecting.
+            # Tolerance = 3 m: removes marching-squares micro-smoothing
+            # (gentle curve points that deviate < 3 m from the straight
+            # chord between neighbours) while preserving ridgeline V-apexes
+            # and valley bends whose perpendicular deviation is typically
+            # 5–20 m at 10 m DEM scale.  0.5 m was too fine — it kept
+            # nearly every smooth-curve point and paths looked soft.
             utm_pts = [(float(xy[0]), float(xy[1])) for xy in path]
-            utm_pts = _douglas_peucker(utm_pts, tolerance=0.5)
+            utm_pts = _douglas_peucker(utm_pts, tolerance=3.0)
             if len(utm_pts) < 2:
                 continue
 

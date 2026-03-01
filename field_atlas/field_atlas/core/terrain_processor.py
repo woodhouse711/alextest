@@ -63,17 +63,20 @@ def generate_contours(
     z_min = float(valid.min())
     z_max = float(valid.max())
 
-    # Apply just enough smoothing to suppress single-pixel DEM noise.
-    # preserve_geology=True → σ=0.3 (nearly raw); False → σ=1.0 (old default).
-    sigma = 0.3 if preserve_geology else 1.0
-    nan_mask = np.isnan(elevation)
-    filled_for_smooth = np.where(nan_mask, 0.0, elevation)
-    weights = np.where(nan_mask, 0.0, 1.0)
-    smoothed_data = gaussian_filter(filled_for_smooth.astype(np.float64), sigma=sigma)
-    smoothed_weights = gaussian_filter(weights.astype(np.float64), sigma=sigma)
-    with np.errstate(invalid="ignore", divide="ignore"):
-        elev_work = (smoothed_data / smoothed_weights).astype(np.float32)
-    elev_work[smoothed_weights == 0.0] = np.nan
+    # preserve_geology=True: use the raw grid so ridgeline V-shapes and
+    # drainage inflections survive into the contour paths unchanged.
+    # preserve_geology=False: σ=1.0 blur (old default, rounder/smoother).
+    if preserve_geology:
+        elev_work = elevation.copy().astype(np.float32)
+    else:
+        nan_mask = np.isnan(elevation)
+        filled_for_smooth = np.where(nan_mask, 0.0, elevation)
+        weights = np.where(nan_mask, 0.0, 1.0)
+        smoothed_data = gaussian_filter(filled_for_smooth.astype(np.float64), sigma=1.0)
+        smoothed_weights = gaussian_filter(weights.astype(np.float64), sigma=1.0)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            elev_work = (smoothed_data / smoothed_weights).astype(np.float32)
+        elev_work[smoothed_weights == 0.0] = np.nan
 
     # First level is the nearest interval boundary at or above z_min.
     first_level = np.ceil(z_min / interval_m) * interval_m
