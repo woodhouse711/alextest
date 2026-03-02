@@ -64,7 +64,7 @@ _NL_BAND_W    = 2.5        # mm — each of the two bands
 _NL_BLACK     = "#333333"
 _NL_WHITE     = "#FFFFFF"
 _NL_STROKE    = 0.15       # mm — hairline outlines on inner/outer edges
-_NL_BAND_OPY  = 1 / 3     # opacity applied to checker bands (halftone effect)
+_NL_BAND_OPY  = 0.25       # opacity applied to checker bands and corners (25 % halftone)
 
 
 def _feature_style(ftype: str) -> dict:
@@ -591,9 +591,10 @@ def _render_graticule(
     lng_vals = _gen_values(min_lng, max_lng, subdiv_deg)
 
     # ------------------------------------------------------------------
-    # Grid lines — continuous hairlines, clipped to map area
+    # Grid lines — continuous hairlines at 50% opacity, clipped to map area
     # ------------------------------------------------------------------
     g = dwg.g(id="graticule", clip_path=f"url(#{clip_id})")
+    g["opacity"] = "0.5"
 
     for lat_val in lat_vals:
         pts = _project_lat_line(transformer, lat_val, min_lng, max_lng, proj_to_svg)
@@ -806,40 +807,17 @@ def _render_checkered_border(
     _vsegs(right_ys, offset_y, bot_y, right_x, right_x + HW)
 
     # ------------------------------------------------------------------ #
-    # Corner squares — 3 mm × 3 mm, solid black                           #
+    # Corner squares — same 25 % opacity as the checker bands             #
     # ------------------------------------------------------------------ #
-    for cx, cy in [
+    for _cx, _cy in [
         (offset_x - BW, offset_y - BW),   # top-left
         (right_x,       offset_y - BW),   # top-right
         (offset_x - BW, bot_y),           # bottom-left
         (right_x,       bot_y),           # bottom-right
     ]:
-        g.add(dwg.rect(insert=(cx, cy), size=(BW, BW), fill=B, stroke="none"))
-
-    # ------------------------------------------------------------------ #
-    # Hairline outlines — outer perimeter, mid-band divider, inner edge   #
-    # ------------------------------------------------------------------ #
-    sw = _NL_STROKE
-    # Outer perimeter of entire neatline
-    g.add(dwg.rect(
-        insert=(offset_x - BW, offset_y - BW),
-        size=(map_w_mm + 2 * BW, map_h_mm + 2 * BW),
-        fill="none", stroke=B, stroke_width=sw,
-    ))
-    # Mid-band divider lines (horizontal top/bottom, vertical left/right)
-    for (x1, y1, x2, y2) in [
-        (offset_x - BW, offset_y - HW, right_x + BW, offset_y - HW),   # top mid
-        (offset_x - BW, bot_y + HW,   right_x + BW, bot_y + HW),       # bot mid
-        (offset_x - HW, offset_y - BW, offset_x - HW, bot_y + BW),     # left mid
-        (right_x + HW,  offset_y - BW, right_x + HW,  bot_y + BW),     # right mid
-    ]:
-        g.add(dwg.line(start=(x1, y1), end=(x2, y2), stroke=B, stroke_width=sw * 0.6))
-    # Inner edge (map neatline)
-    g.add(dwg.rect(
-        insert=(offset_x, offset_y),
-        size=(map_w_mm, map_h_mm),
-        fill="none", stroke=B, stroke_width=sw,
-    ))
+        _cr = dwg.rect(insert=(_cx, _cy), size=(BW, BW), fill=B, stroke="none")
+        _cr["fill-opacity"] = f"{OPY:.4f}"
+        g.add(_cr)
 
     dwg.add(g)
 
@@ -1348,6 +1326,96 @@ def _sample_hillshade(
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+
+
+def _draw_north_arrow(
+    dwg: "svgwrite.Drawing",
+    cx: float,
+    cy: float,
+    r_mm: float,
+) -> None:
+    """Draw a classic 8-pointed nautical compass rose as a black silhouette.
+
+    The rose is centred at *(cx, cy)* with the north tip at *(cx, cy − r_mm)*.
+    Cardinal tips (N/S/E/W) are the longest points; N is slightly longer than
+    the rest to read unmistakably as the prime direction.  Intercardinal tips
+    (NE/SE/SW/NW) are shorter.  A small white hub circle marks the centre and
+    an 'N' label in a serif face floats above the north tip.
+
+    Parameters
+    ----------
+    dwg:
+        svgwrite Drawing (mm user-units) — elements are added in-place.
+    cx, cy:
+        Centre of the rose in mm.
+    r_mm:
+        Distance from centre to the N tip in mm (≈ 12.7 mm for a 1 inch rose).
+    """
+    import math
+
+    R_N  = r_mm          # N tip — longest, marks prime direction
+    R_EW = r_mm * 0.88   # E / W tips
+    R_S  = r_mm * 0.82   # S tip — slightly shorter than E/W for hierarchy
+    R_IC = r_mm * 0.50   # intercardinal (NE, SE, SW, NW) tips
+    R_in = r_mm * 0.13   # inner-notch concavity radius
+
+    def _pt(bearing_deg: float, radius: float) -> tuple[float, float]:
+        """(x, y) for a bearing measured clockwise from north."""
+        b = math.radians(bearing_deg)
+        return (cx + radius * math.sin(b), cy - radius * math.cos(b))
+
+    # 16-vertex alternating star: outer tip / inner notch / outer tip / …
+    # Bearings: 0=N, 45=NE, 90=E, 135=SE, 180=S, 225=SW, 270=W, 315=NW
+    verts: list[tuple[float, float]] = []
+    for i in range(16):
+        bearing = i * 22.5
+        if i % 2 == 1:      # odd indices → inner notch
+            r = R_in
+        elif i == 0:        # N
+            r = R_N
+        elif i == 8:        # S (bearing 180°)
+            r = R_S
+        elif i in (4, 12):  # E (90°), W (270°)
+            r = R_EW
+        else:               # intercardinals (45, 135, 225, 315)
+            r = R_IC
+        verts.append(_pt(bearing, r))
+
+    path_d = "M " + " L ".join(f"{x:.3f},{y:.3f}" for x, y in verts) + " Z"
+
+    g = dwg.g(id="north-arrow")
+
+    # Main silhouette star
+    g.add(dwg.path(d=path_d, fill="#000000", stroke="none"))
+
+    # White hub — visually anchors the centre and suggests a compass pivot
+    g.add(dwg.circle(
+        center=(cx, cy), r=r_mm * 0.10,
+        fill="#FFFFFF", stroke="none",
+    ))
+
+    # Small black ring around hub for refinement
+    ring = dwg.circle(
+        center=(cx, cy), r=r_mm * 0.10,
+        fill="none", stroke="#000000", stroke_width=r_mm * 0.025,
+    )
+    g.add(ring)
+
+    # "N" label — bold serif, just above the north tip
+    n_y = cy - R_N - r_mm * 0.18
+    n_lbl = dwg.text(
+        "N",
+        insert=(cx, n_y),
+        text_anchor="middle",
+        font_size=r_mm * 0.40,
+        font_weight="bold",
+        font_family="Liberation Serif, Georgia, 'Times New Roman', serif",
+        fill="#000000",
+    )
+    n_lbl["dominant-baseline"] = "auto"
+    g.add(n_lbl)
+
+    dwg.add(g)
 
 
 def render_terrain_svg(
@@ -1898,6 +1966,17 @@ def render_terrain_svg(
             offset_x, offset_y, map_w_mm, map_h_mm,
         )
 
+    # ------------------------------------------------------------------
+    # 10. North arrow — classic 8-point nautical compass rose, lower-left
+    # ------------------------------------------------------------------
+    _R_ARROW = 12.7   # 0.5 in = 1 in total diameter
+    _draw_north_arrow(
+        dwg,
+        cx=margin_mm + _R_ARROW + 3.0,
+        cy=height_mm - bottom_margin_mm + _R_ARROW + 4.0,
+        r_mm=_R_ARROW,
+    )
+
     dwg.save()
     return str(out.resolve())
 
@@ -1973,7 +2052,8 @@ def add_title_block(
     margin_top_y = height_mm - bottom_margin_mm    # top edge of title block strip
 
     # Vertical positions — Row 1 baseline anchored from top of the strip.
-    PAD_TOP = 7.5
+    # Extra 6.35 mm (¼ in) of breathing room below the neatline border.
+    PAD_TOP = 13.85
     r1_y   = margin_top_y + PAD_TOP + R1_MM
     r2_y   = r1_y +  9.0     # Row 1 → Row 2:  9 mm
     rule_y = r2_y + 12.0     # Row 2 → rule:  12 mm
