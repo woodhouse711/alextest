@@ -1328,6 +1328,209 @@ def _sample_hillshade(
 # ---------------------------------------------------------------------------
 
 
+def _draw_scale_bar(
+    dwg: "svgwrite.Drawing",
+    scale_mm_per_m: float,
+    right_edge_x: float,
+    bar_top_y: float,
+) -> None:
+    """Draw a dual-unit cartographic checkered scale bar, right-aligned.
+
+    The bar length is chosen automatically so it prints between 35–85 mm wide
+    and corresponds to a clean ground distance.  A one-segment extension to
+    the left of zero provides fine-subdivision reading.  Metric labels appear
+    below each main-segment tick; a secondary imperial row follows; a
+    representative-fraction string concludes the assembly.
+
+    Parameters
+    ----------
+    dwg :
+        svgwrite.Drawing in mm user-units.
+    scale_mm_per_m :
+        Render scale: mm on paper per projected metre (``scale`` in
+        ``render_terrain_svg``).
+    right_edge_x :
+        X coordinate (mm) of the neatline right outer edge; the bar is
+        right-aligned here.
+    bar_top_y :
+        Y coordinate (mm) of the top edge of the bar rectangle.
+    """
+    # ── 1. Auto-select a clean bar length ─────────────────────────────────
+    # Each entry: (total_ground_m, n_main_segments, metres_per_segment).
+    # Tried in order; first whose paper width falls in [35, 85] mm wins.
+    CANDIDATES: list[tuple[int, int, int]] = [
+        (10_000, 4, 2500),
+        ( 5_000, 5, 1000),
+        ( 4_000, 4, 1000),
+        ( 2_000, 4,  500),
+        ( 1_000, 4,  250),
+        (   500, 5,  100),
+        (   400, 4,  100),
+        (   300, 3,  100),
+        (   250, 5,   50),
+        (   200, 4,   50),
+        (   100, 5,   20),
+        (    50, 5,   10),
+        (    20, 4,    5),
+        (    10, 5,    2),
+    ]
+    chosen = next(
+        (c for c in CANDIDATES if 35.0 <= c[0] * scale_mm_per_m <= 85.0),
+        min(CANDIDATES, key=lambda c: abs(c[0] * scale_mm_per_m - 60.0)),
+    )
+    total_m, n_segs, seg_m = chosen
+    bar_w  = total_m * scale_mm_per_m   # total main-bar width (mm)
+    seg_w  = bar_w / n_segs             # one segment width (mm)
+
+    # Extension: one segment wide, subdivided into 4 equal sub-segments.
+    N_EXT   = 4
+    ext_sub = seg_w / N_EXT
+
+    # X coordinates — right-aligned.
+    x_right = right_edge_x
+    x_zero  = x_right - bar_w          # zero mark / start of main bar
+    x_left  = x_zero  - seg_w          # left edge of extension
+
+    # ── 2. Style constants ─────────────────────────────────────────────────
+    C_DARK = "#333333"
+    C_LITE = "#FFFFFF"
+    C_LBL  = "#333333"
+    C_IMP  = "#666666"
+    C_RF   = "#666666"
+    FONT   = "Liberation Sans, Arial, Helvetica, sans-serif"
+    BAR_H  = 2.0    # mm — bar height
+    SW     = 0.15   # mm — border stroke-width
+    TICK_H = 1.5    # mm — full tick below bar
+    F_MET  = 1.59   # mm — 4.5 pt  metric labels
+    F_IMP  = 1.41   # mm — 4 pt    imperial labels
+    F_RF   = 1.41   # mm — 4 pt    representative fraction
+
+    g = dwg.g(id="scale-bar")
+
+    # ── 3. Extension segments (left of zero) ──────────────────────────────
+    # Colour rule (L→R): dark | white | dark | white
+    # The segment immediately left of zero is white, contrasting with the
+    # first dark main segment so the zero mark reads as a clear boundary.
+    for i in range(N_EXT):
+        fill = C_DARK if (i % 2 == 0) else C_LITE
+        g.add(dwg.rect(
+            insert=(x_left + i * ext_sub, bar_top_y),
+            size=(ext_sub, BAR_H),
+            fill=fill, stroke=C_DARK, stroke_width=SW,
+        ))
+
+    # ── 4. Main bar segments (right of zero) ──────────────────────────────
+    # Colour rule (L→R): dark | white | dark | white …
+    for i in range(n_segs):
+        fill = C_DARK if (i % 2 == 0) else C_LITE
+        g.add(dwg.rect(
+            insert=(x_zero + i * seg_w, bar_top_y),
+            size=(seg_w, BAR_H),
+            fill=fill, stroke=C_DARK, stroke_width=SW,
+        ))
+
+    # ── 5. Tick marks ─────────────────────────────────────────────────────
+    bar_bot = bar_top_y + BAR_H
+
+    def _tick(x: float, full: bool = True) -> None:
+        h = TICK_H if full else TICK_H * 0.55
+        g.add(dwg.line(
+            start=(x, bar_bot), end=(x, bar_bot + h),
+            stroke=C_LBL, stroke_width=SW,
+        ))
+
+    # Extension: full tick at left edge; short ticks at inner sub-divisions.
+    _tick(x_left, full=True)
+    for i in range(1, N_EXT):
+        _tick(x_left + i * ext_sub, full=False)
+
+    # Zero mark and every main-segment boundary get full ticks.
+    _tick(x_zero, full=True)
+    for i in range(1, n_segs + 1):
+        _tick(x_zero + i * seg_w, full=True)
+
+    # ── 6. Metric distance labels ──────────────────────────────────────────
+    lbl_met_y = bar_bot + TICK_H + F_MET + 0.3   # text baseline
+
+    def _fmt_m(dist_m: int) -> str:
+        if dist_m == 0:
+            return "0"
+        if dist_m >= 1000 and dist_m % 1000 == 0:
+            return f"{dist_m // 1000} km"
+        if dist_m >= 1000:
+            return f"{dist_m / 1000:.1f} km"
+        return f"{dist_m} m"
+
+    def _met_lbl(x: float, dist_m: int) -> None:
+        g.add(dwg.text(
+            _fmt_m(dist_m), insert=(x, lbl_met_y),
+            text_anchor="middle", font_size=F_MET,
+            font_family=FONT, fill=C_LBL,
+        ))
+
+    _met_lbl(x_zero, 0)
+    for i in range(1, n_segs + 1):
+        _met_lbl(x_zero + i * seg_w, i * seg_m)
+
+    # ── 7. Imperial labels (second row) ───────────────────────────────────
+    MI_PER_M   = 0.000621371
+    total_mi   = total_m * MI_PER_M
+    lbl_imp_y  = lbl_met_y + F_MET + 1.3
+
+    # Unicode fraction characters render cleanly in common sans-serif fonts.
+    MILE_MARKS: list[tuple[float, str]] = [
+        (0.125, "\u215b mi"),   # ⅛
+        (0.250, "\u00bc mi"),   # ¼
+        (0.500, "\u00bd mi"),   # ½
+        (0.750, "\u00be mi"),   # ¾
+        (1.0,   "1 mi"),
+        (1.5,   "1\u00bd mi"),  # 1½
+        (2.0,   "2 mi"),
+        (5.0,   "5 mi"),
+    ]
+
+    def _imp_lbl(x: float, label: str) -> None:
+        g.add(dwg.text(
+            label, insert=(x, lbl_imp_y),
+            text_anchor="middle", font_size=F_IMP,
+            font_family=FONT, fill=C_IMP,
+        ))
+
+    _imp_lbl(x_zero, "0")
+    for miles, frac_lbl in MILE_MARKS:
+        if miles > total_mi * 1.01:
+            break
+        x_mi = x_zero + (miles / MI_PER_M) * scale_mm_per_m
+        if x_mi <= x_right + 0.5:
+            _imp_lbl(x_mi, frac_lbl)
+
+    # ── 8. Representative fraction ─────────────────────────────────────────
+    # 1 mm on paper == rf_val mm on the ground.
+    rf_val = 1_000.0 / scale_mm_per_m
+    STANDARD_RF = [
+        1_000, 2_000, 2_500, 4_000, 5_000,
+        10_000, 12_500, 15_000, 20_000, 24_000, 25_000,
+        50_000, 100_000, 250_000,
+    ]
+    rf_std = min(STANDARD_RF, key=lambda s: abs(s - rf_val))
+    # Use a standard value if within 20 %; otherwise round to nearest 500.
+    if abs(rf_std - rf_val) / rf_val > 0.20:
+        rf_std = max(500, round(rf_val / 500) * 500)
+
+    rf_cx = (x_left + x_right) / 2.0
+    rf_y  = lbl_imp_y + F_IMP + 1.8
+    g.add(dwg.text(
+        f"1:{rf_std:,}",
+        insert=(rf_cx, rf_y),
+        text_anchor="middle",
+        font_size=F_RF,
+        font_family=FONT,
+        fill=C_RF,
+    ))
+
+    dwg.add(g)
+
+
 def _draw_north_arrow(
     dwg: "svgwrite.Drawing",
     cx: float,
@@ -1975,6 +2178,19 @@ def render_terrain_svg(
         cx=margin_mm + _R_ARROW + 3.0,
         cy=height_mm - bottom_margin_mm + _R_ARROW + 4.0,
         r_mm=_R_ARROW,
+    )
+
+    # ------------------------------------------------------------------
+    # 11. Scale bar — lower-right margin, right-aligned with neatline
+    # ------------------------------------------------------------------
+    # The bar sits in the bottom-margin strip at the same vertical level as
+    # the north arrow, mirrored to the right side of the page.
+    # Right-align to the outer right edge of the neatline border.
+    _draw_scale_bar(
+        dwg,
+        scale_mm_per_m=scale,
+        right_edge_x=offset_x + map_w_mm + _NL_TOTAL_W,
+        bar_top_y=height_mm - bottom_margin_mm + 5.0,
     )
 
     dwg.save()
