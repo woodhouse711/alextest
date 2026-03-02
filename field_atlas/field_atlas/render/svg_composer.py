@@ -51,20 +51,20 @@ _CONTOUR_LABEL_CHAR_W  = _CONTOUR_LABEL_FONT_MM * 0.58
 # Graticule and neatline constants
 # ---------------------------------------------------------------------------
 
-_GRAT_STROKE       = "#E0E0E0"   # lighter than minor contours
-_GRAT_STROKE_W     = 0.10        # mm
-_GRAT_DASHARRAY    = "1.5,3"     # 1.5 mm dash / 3 mm gap
-_GRAT_LABEL_FONT   = 1.41        # 4pt
-_GRAT_LABEL_COLOR  = "#999999"
-_GRAT_LABEL_FONT_F = "Liberation Sans, Arial, Helvetica, sans-serif"
-_GRAT_LABEL_GAP    = 1.0         # mm between label and outer border edge
-_GRAT_N_SAMPLE     = 32          # intermediate points when projecting a grid line
+_GRAT_STROKE        = "#555555"   # 33% black — solid hairline
+_GRAT_STROKE_W      = 0.10        # mm
+_GRAT_LABEL_FONT    = 2.12        # 6pt (+2pt from original 4pt)
+_GRAT_LABEL_COLOR   = "#555555"   # 33% black — matches grid lines
+_GRAT_LABEL_FONT_F  = "Liberation Sans, Arial, Helvetica, sans-serif"
+_GRAT_LABEL_GAP     = 1.0         # mm between label and outer border edge
+_GRAT_N_SAMPLE      = 32          # intermediate points when projecting a grid line
 
-_NL_TOTAL_W = 3.0    # mm — total neatline border width
-_NL_BAND_W  = 1.5    # mm — each of the two bands
-_NL_BLACK   = "#333333"
-_NL_WHITE   = "#FFFFFF"
-_NL_STROKE  = 0.15   # mm — hairline outlines on inner/outer edges
+_NL_TOTAL_W   = 5.0        # mm — total neatline border width
+_NL_BAND_W    = 2.5        # mm — each of the two bands
+_NL_BLACK     = "#333333"
+_NL_WHITE     = "#FFFFFF"
+_NL_STROKE    = 0.15       # mm — hairline outlines on inner/outer edges
+_NL_BAND_OPY  = 1 / 3     # opacity applied to checker bands (halftone effect)
 
 
 def _feature_style(ftype: str) -> dict:
@@ -566,12 +566,13 @@ def _render_graticule(
     map_h_mm: float,
     clip_id: str = "map-area",
 ) -> tuple[float, float, float, float, float, float, float]:
-    """Render dashed coordinate grid lines inside the map and labels in the margins.
+    """Render coordinate grid lines inside the map and rotated labels in the margins.
 
-    Grid lines use the projected WGS84 lat/lng graticule, sampled at 32
-    intermediate points to correctly represent meridian convergence.  Each
-    line is clipped to the map area.  Labels are placed just outside the
-    3 mm neatline border, in the margin area.
+    Grid lines are drawn at every *subdivision* interval (1/5 of the primary
+    grid spacing), which matches the neatline border tick positions.  Lines
+    are continuous hairlines at 33% black.  Labels on the left and right
+    margins are rotated 90° to read vertically along each side; top/bottom
+    labels are horizontal.  Label precision is at the seconds level.
 
     Returns ``(min_lat, max_lat, min_lng, max_lng, interval_deg, subdiv_deg,
     interval_min)`` for use by :func:`_render_checkered_border`.
@@ -583,80 +584,84 @@ def _render_graticule(
         min_lat, max_lat, min_lng, max_lng
     )
 
-    lat_vals = _gen_values(min_lat, max_lat, interval_deg)
-    lng_vals = _gen_values(min_lng, max_lng, interval_deg)
+    # Grid lines AND labels use the subdivision interval so every neatline
+    # tick position corresponds to a visible grid line.
+    subdiv_min = interval_min / 5.0   # for seconds-level label formatting
+    lat_vals = _gen_values(min_lat, max_lat, subdiv_deg)
+    lng_vals = _gen_values(min_lng, max_lng, subdiv_deg)
 
     # ------------------------------------------------------------------
-    # Grid lines (clipped to map area)
+    # Grid lines — continuous hairlines, clipped to map area
     # ------------------------------------------------------------------
     g = dwg.g(id="graticule", clip_path=f"url(#{clip_id})")
 
     for lat_val in lat_vals:
         pts = _project_lat_line(transformer, lat_val, min_lng, max_lng, proj_to_svg)
-        line = dwg.polyline(
+        g.add(dwg.polyline(
             pts,
             stroke=_GRAT_STROKE,
             stroke_width=_GRAT_STROKE_W,
             fill="none",
             stroke_linecap="round",
-        )
-        line["stroke-dasharray"] = _GRAT_DASHARRAY
-        g.add(line)
+        ))
 
     for lng_val in lng_vals:
         pts = _project_lng_line(transformer, lng_val, min_lat, max_lat, proj_to_svg)
-        line = dwg.polyline(
+        g.add(dwg.polyline(
             pts,
             stroke=_GRAT_STROKE,
             stroke_width=_GRAT_STROKE_W,
             fill="none",
             stroke_linecap="round",
-        )
-        line["stroke-dasharray"] = _GRAT_DASHARRAY
-        g.add(line)
+        ))
 
     dwg.add(g)
 
     # ------------------------------------------------------------------
-    # Margin labels — outside the 3 mm neatline border
+    # Margin labels — just outside the neatline border
+    # Left / right labels are rotated 90° to read vertically along the side.
     # ------------------------------------------------------------------
-    BW  = _NL_TOTAL_W
-    GAP = _GRAT_LABEL_GAP
+    BW      = _NL_TOTAL_W
+    GAP     = _GRAT_LABEL_GAP
+    F       = _GRAT_LABEL_FONT       # font-size in mm
     right_x = offset_x + map_w_mm
     bot_y   = offset_y + map_h_mm
 
     g_lbl = dwg.g(id="graticule-labels")
     _txt = dict(
         font_family=_GRAT_LABEL_FONT_F,
-        font_size=_GRAT_LABEL_FONT,
+        font_size=F,
         fill=_GRAT_LABEL_COLOR,
     )
 
+    # Left / right edge: lat labels rotated −90° (reads upward, south→north)
+    # The label is centred at cx (horizontally, away from the border) and at
+    # the grid-line crossing (vertically).  cx is offset outward by half the
+    # font height so the nearest edge of the text clears the border.
     for lat_val in lat_vals:
         pts = _project_lat_line(transformer, lat_val, min_lng, max_lng, proj_to_svg)
-        lbl = _fmt_coord(lat_val, "lat", interval_min)
+        lbl = _fmt_coord(lat_val, "lat", subdiv_min)
 
         y_left = _cross_vertical(pts, offset_x)
         if y_left is not None and offset_y <= y_left <= bot_y:
-            g_lbl.add(dwg.text(
-                lbl,
-                insert=(offset_x - BW - GAP, y_left + _GRAT_LABEL_FONT * 0.35),
-                text_anchor="end",
-                **_txt,
-            ))
+            cx = offset_x - BW - GAP - F * 0.5
+            t = dwg.text(lbl, insert=(cx, y_left), text_anchor="middle", **_txt)
+            t["dominant-baseline"] = "central"
+            t["transform"] = f"rotate(-90,{cx:.3f},{y_left:.3f})"
+            g_lbl.add(t)
 
         y_right = _cross_vertical(pts, right_x)
         if y_right is not None and offset_y <= y_right <= bot_y:
-            g_lbl.add(dwg.text(
-                lbl,
-                insert=(right_x + BW + GAP, y_right + _GRAT_LABEL_FONT * 0.35),
-                text_anchor="start",
-                **_txt,
-            ))
+            cx = right_x + BW + GAP + F * 0.5
+            t = dwg.text(lbl, insert=(cx, y_right), text_anchor="middle", **_txt)
+            t["dominant-baseline"] = "central"
+            t["transform"] = f"rotate(-90,{cx:.3f},{y_right:.3f})"
+            g_lbl.add(t)
 
+    # Top / bottom edge: lng labels, horizontal, centred on the grid line
     for lng_val in lng_vals:
         pts = _project_lng_line(transformer, lng_val, min_lat, max_lat, proj_to_svg)
-        lbl = _fmt_coord(lng_val, "lng", interval_min)
+        lbl = _fmt_coord(lng_val, "lng", subdiv_min)
 
         x_top = _cross_horizontal(pts, offset_y)
         if x_top is not None and offset_x <= x_top <= right_x:
@@ -671,7 +676,7 @@ def _render_graticule(
         if x_bot is not None and offset_x <= x_bot <= right_x:
             g_lbl.add(dwg.text(
                 lbl,
-                insert=(x_bot, bot_y + BW + GAP + _GRAT_LABEL_FONT),
+                insert=(x_bot, bot_y + BW + GAP + F),
                 text_anchor="middle",
                 **_txt,
             ))
@@ -755,6 +760,8 @@ def _render_checkered_border(
     # the opposite of the outer (classic USGS interlocked checker).
     # Segments are indexed from 0; corners (index 0 and last) are always B.
 
+    OPY = _NL_BAND_OPY   # 1/3 opacity for halftone effect on both bands
+
     def _hsegs(breaks, x0_full, x1_full, inner_y0, outer_y0):
         """Horizontal edge segments.  inner_y0 is the y-start of the inner band
         (adjacent to map content); outer_y0 the y-start of the outer band."""
@@ -763,8 +770,11 @@ def _render_checkered_border(
             a, b = segs[i], segs[i + 1]
             c_o = B if i % 2 == 0 else W   # outer colour
             c_i = W if i % 2 == 0 else B   # inner colour
-            g.add(dwg.rect(insert=(a, outer_y0), size=(b - a, HW), fill=c_o, stroke="none"))
-            g.add(dwg.rect(insert=(a, inner_y0), size=(b - a, HW), fill=c_i, stroke="none"))
+            r_o = dwg.rect(insert=(a, outer_y0), size=(b - a, HW), fill=c_o, stroke="none")
+            r_i = dwg.rect(insert=(a, inner_y0), size=(b - a, HW), fill=c_i, stroke="none")
+            r_o["fill-opacity"] = f"{OPY:.4f}"
+            r_i["fill-opacity"] = f"{OPY:.4f}"
+            g.add(r_o); g.add(r_i)
 
     def _vsegs(breaks, y0_full, y1_full, inner_x0, outer_x0):
         """Vertical edge segments.  inner_x0 is the x-start of the inner band."""
@@ -773,8 +783,11 @@ def _render_checkered_border(
             a, b = segs[i], segs[i + 1]
             c_o = B if i % 2 == 0 else W
             c_i = W if i % 2 == 0 else B
-            g.add(dwg.rect(insert=(outer_x0, a), size=(HW, b - a), fill=c_o, stroke="none"))
-            g.add(dwg.rect(insert=(inner_x0, a), size=(HW, b - a), fill=c_i, stroke="none"))
+            r_o = dwg.rect(insert=(outer_x0, a), size=(HW, b - a), fill=c_o, stroke="none")
+            r_i = dwg.rect(insert=(inner_x0, a), size=(HW, b - a), fill=c_i, stroke="none")
+            r_o["fill-opacity"] = f"{OPY:.4f}"
+            r_i["fill-opacity"] = f"{OPY:.4f}"
+            g.add(r_o); g.add(r_i)
 
     # Top: inner band  = (offset_y - HW) → offset_y
     #       outer band = (offset_y - BW) → (offset_y - HW)
