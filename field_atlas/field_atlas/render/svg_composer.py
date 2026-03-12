@@ -38,9 +38,9 @@ _WATER_TYPES  = frozenset({"water", "pond", "reservoir"})
 # minor = every      interval (e.g.  10 m at 10 m interval)
 # Colors are pure grayscale percentages; no RGB variation.
 _CONTOUR_TIERS: dict[str, tuple[str, float]] = {
-    "major": ("#808080", 0.20),   # 50% black — heavy/primary
-    "index": ("#BFBFBF", 0.10),   # 25% black — medium
-    "minor": ("#D9D9D9", 0.05),   # 15% black — light
+    "major": ("#2A2A2A", 0.28),   # near-black — heavy/primary
+    "index": ("#555555", 0.18),   # dark gray — medium
+    "minor": ("#888888", 0.09),   # mid gray — light
 }
 
 # Index contour label style
@@ -368,7 +368,7 @@ def _render_wind_streamlines(
     if not streamlines:
         return
 
-    g = dwg.g(id="wind-streamlines", clip_path=f"url(#{clip_id})")
+    g = dwg.g(id="wind-streamlines", clip_path=f"url(#{clip_id})", opacity=0.5)
 
     _N_SEGS = 20          # polyline chunks per streamline
     _COLOR  = "#2E3F50"   # cool dark blue-gray
@@ -1786,9 +1786,36 @@ def render_terrain_svg(
     _clip.add(dwg.rect(insert=(offset_x, offset_y), size=(map_w_mm, map_h_mm)))
 
     # ------------------------------------------------------------------
+    # 3b. Hillshade — embedded grayscale raster with multiply blend
+    #     White (lit) = no change; dark (shadow) darkens underlying layers.
+    #     Opacity kept modest so the cream background still reads clearly.
+    # ------------------------------------------------------------------
+    if hillshade is not None:
+        import io as _io
+        import base64 as _base64
+        import numpy as _np
+        try:
+            from PIL import Image as _PILImage
+            _hs_u8 = (_np.clip(hillshade, 0.0, 1.0) * 255).astype(_np.uint8)
+            _hs_img = _PILImage.fromarray(_hs_u8, mode="L")
+            _buf = _io.BytesIO()
+            _hs_img.save(_buf, format="PNG", optimize=False)
+            _b64 = _base64.b64encode(_buf.getvalue()).decode("ascii")
+            _href = f"data:image/png;base64,{_b64}"
+            _img_el = dwg.image(
+                href=_href,
+                insert=(offset_x, offset_y),
+                size=(map_w_mm, map_h_mm),
+                clip_path="url(#map-area)",
+            )
+            _img_el["style"] = "mix-blend-mode:multiply;opacity:0.45;"
+            dwg.add(_img_el)
+        except Exception as _hs_err:
+            pass  # degrade gracefully if PIL unavailable
+
+    # ------------------------------------------------------------------
     # 4. OSM lower layers: water areas, waterways, roads
-    #    Rendered above hillshade (implicit in contour shading) and below
-    #    contour lines so topography remains the primary visual layer.
+    #    Rendered above hillshade and below contour lines.
     # ------------------------------------------------------------------
     if osm_vectors is not None and transformer is not None:
         _render_osm_lower_layers(dwg, osm_vectors, transformer, proj_to_svg, clip_id="map-area")
