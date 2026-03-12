@@ -371,7 +371,7 @@ def _render_wind_streamlines(
     g = dwg.g(id="wind-streamlines", clip_path=f"url(#{clip_id})")
 
     _N_SEGS = 20          # polyline chunks per streamline
-    _COLOR  = "#C6DDE8"   # soft light blue
+    _COLOR  = "#3D7CA3"   # medium blue — clearly legible against cream/hillshade
 
     # --- Global speed normalisation -----------------------------------------
     # Collect mean speed per streamline; normalise against the 90th percentile
@@ -401,7 +401,7 @@ def _render_wind_streamlines(
         # Opacity applied once on a per-streamline group so the tapered
         # segments (which share endpoints) compose flat against each other
         # before blending with the map — prevents cap-on-cap darkening.
-        opacity = round(0.25 + 0.75 * speed_norm, 3)
+        opacity = round(0.60 + 0.40 * speed_norm, 3)
 
         # Head stroke width: scales with speed.  Tail is always a hairline.
         w_tail = 0.03
