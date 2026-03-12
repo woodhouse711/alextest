@@ -255,14 +255,19 @@ def trace_streamlines(
     wind_direction_deg: float = 225.0,
     wind_speed_kmh: float = 19.0,
     seed: int = 42,
+    grid_rows: int = 0,
+    grid_cols: int = 0,
 ) -> list[list[tuple[float, float, float]]]:
     """Trace streamlines through the wind vector field using RK4 integration.
 
-    Streamline length and density vary with local wind speed: fast zones
-    produce longer, more densely seeded lines; calm zones produce short
-    stubs.  This encodes wind intensity spatially in the same way the
-    Apple Weather wind visualization does — the *pattern* of strokes
-    communicates speed as clearly as any single-line property.
+    When *grid_rows* and *grid_cols* are both > 0, seeds are placed on a
+    regular grid covering the entire map extent (with a small random jitter).
+    Each streamline is kept short — roughly one grid-cell length — so the
+    result reads as a dense field of local direction arrows rather than long
+    flowing curves.  This is the preferred display mode.
+
+    When *grid_rows* / *grid_cols* are 0 (legacy default) the original
+    60 % upwind-edge + 40 % speed-density-interior seeding is used instead.
 
     Parameters
     ----------
@@ -272,26 +277,27 @@ def trace_streamlines(
     bounds_projected:
         ``{min_x, max_x, min_y, max_y}`` bounding box in projected metres.
     num_streamlines:
-        Total number of streamlines to trace.
+        Total number of streamlines (used only in legacy edge-seeding mode).
     steps:
-        *Maximum* integration steps for the fastest streamlines.
+        Maximum integration steps per streamline.  In grid mode this also
+        controls the total length: ``step_size × steps ≈ one grid cell``.
     min_steps:
-        *Minimum* integration steps for the slowest streamlines.
-        Length is interpolated between ``min_steps`` and ``steps``
-        proportionally to the starting-point speed (relative to the
-        field's 90th-percentile speed).  Default 18 → slow lines cover
-        ~15 % of the map extent.
+        Minimum integration steps (legacy mode only).
     step_size:
-        Physical step length in metres.  Auto-computed when ``None``:
-        ``max(extent_x, extent_y) / (steps * 2.5)``.
+        Physical step length in metres.  Auto-computed when ``None``.
+        In grid mode: ``grid_cell_size / steps`` so the total arrow length
+        ≈ one grid spacing.
     wind_direction_deg:
-        Meteorological direction (FROM) in degrees; used to identify the
-        upwind edges for seed placement.
+        Meteorological direction (FROM) in degrees.
     wind_speed_kmh:
-        Base wind speed used for the stagnation threshold (stop if local
-        speed drops below 5 % of this value).
+        Base wind speed used for the stagnation threshold.
     seed:
         Random seed for reproducible seed-point jitter.
+    grid_rows:
+        Number of seed rows in grid mode.  Set > 0 together with
+        *grid_cols* to enable grid seeding.
+    grid_cols:
+        Number of seed columns in grid mode.
 
     Returns
     -------
@@ -308,92 +314,109 @@ def trace_streamlines(
     proj_w = max_x - min_x
     proj_h = max_y - min_y
 
-    if step_size is None:
-        step_size = max(proj_w, proj_h) / (steps * 2.5)
-
     min_speed = max(0.05 * wind_speed_kmh, 0.5)  # stagnation threshold km/h
 
-    # --- Speed magnitude field for density-weighted seeding -----------------
+    # --- Speed magnitude field -----------------------------------------------
     speed_mag = np.sqrt(u_field.astype(float) ** 2 + v_field.astype(float) ** 2)
-    # 90th-percentile speed for variable-length normalisation.
     global_p90 = float(np.percentile(speed_mag, 90))
     global_p90 = max(global_p90, wind_speed_kmh * 0.1, 1e-6)
 
-    # --- Seed placement: 60% upwind edges, 40% speed-density interior -------
-    dir_rad = math.radians(wind_direction_deg)
-    u_base = -math.sin(dir_rad)   # eastward component of unit flow vector
-    v_base = -math.cos(dir_rad)   # northward component
+    use_grid = grid_rows > 0 and grid_cols > 0
 
-    n_edge = int(num_streamlines * 0.60)
-    n_interior = num_streamlines - n_edge
-
+    # --- Seed placement -------------------------------------------------------
     seeds: list[tuple[float, float]] = []
 
-    # Distribute edge seeds between the two upwind sides, weighted by how
-    # directly the wind hits each edge (|u| for west/east, |v| for south/north).
-    abs_u = abs(u_base)
-    abs_v = abs(v_base)
-    total = abs_u + abs_v + 1e-9
-    n_hori = max(1, round(n_edge * abs_v / total))   # south or north edge
-    n_vert = n_edge - n_hori                          # west or east edge
+    if use_grid:
+        # Regular grid across the full extent; seeds centred in each cell with
+        # a small jitter (±20 % of cell size) to avoid aliasing artefacts.
+        cell_w = proj_w / grid_cols
+        cell_h = proj_h / grid_rows
+        jitter_x = 0.20 * cell_w
+        jitter_y = 0.20 * cell_h
+        for row in range(grid_rows):
+            cy = max_y - (row + 0.5) * cell_h   # centre of this cell (northward)
+            for col in range(grid_cols):
+                cx = min_x + (col + 0.5) * cell_w
+                sx = float(np.clip(cx + rng.uniform(-jitter_x, jitter_x), min_x, max_x))
+                sy = float(np.clip(cy + rng.uniform(-jitter_y, jitter_y), min_y, max_y))
+                seeds.append((sx, sy))
 
-    def _jitter(val: float, spacing: float) -> float:
-        return float(val + rng.uniform(-0.1 * spacing, 0.1 * spacing))
+        # In grid mode step_size is set so the total arrow length ≈ one cell.
+        if step_size is None:
+            cell_size = min(cell_w, cell_h)
+            step_size = cell_size / max(steps, 1)
 
-    # Vertical upwind edge (west if u>0, east if u<0):
-    edge_x = min_x if u_base >= 0 else max_x
-    if n_vert > 1:
-        spacing_v = proj_h / (n_vert - 1)
-        for i in range(n_vert):
-            y = _jitter(min_y + i * spacing_v, spacing_v)
-            seeds.append((edge_x, float(np.clip(y, min_y, max_y))))
     else:
-        seeds.append((edge_x, (min_y + max_y) / 2.0))
+        # --- Legacy: 60 % upwind edges + 40 % speed-density interior ---------
+        if step_size is None:
+            step_size = max(proj_w, proj_h) / (steps * 2.5)
 
-    # Horizontal upwind edge (south if v>0, north if v<0):
-    edge_y = min_y if v_base >= 0 else max_y
-    if n_hori > 1:
-        spacing_h = proj_w / (n_hori - 1)
-        for i in range(n_hori):
-            x = _jitter(min_x + i * spacing_h, spacing_h)
-            seeds.append((float(np.clip(x, min_x, max_x)), edge_y))
-    else:
-        seeds.append(((min_x + max_x) / 2.0, edge_y))
+        dir_rad = math.radians(wind_direction_deg)
+        u_base = -math.sin(dir_rad)
+        v_base = -math.cos(dir_rad)
 
-    # Interior seeds: speed-density weighted so high-velocity zones receive
-    # proportionally more seeds and therefore more strokes.
-    # Sub-linear exponent (0.55) keeps some coverage in calm areas.
-    _N_grid = speed_mag.shape[0]
-    flat_w = speed_mag.flatten() ** 0.55
-    flat_w = flat_w / flat_w.sum()
-    flat_idx = rng.choice(len(flat_w), size=n_interior, p=flat_w.astype(float))
-    cell_sz = max(proj_w, proj_h) / max(1, _N_grid - 1)
-    for idx in flat_idx:
-        row_g = int(idx) // _N_grid
-        col_g = int(idx) % _N_grid
-        gx = min_x + (col_g / max(1, _N_grid - 1)) * proj_w
-        gy = max_y - (row_g / max(1, _N_grid - 1)) * proj_h
-        # Jitter within ±15 % of one grid cell to break up regularity.
-        gx += float(rng.uniform(-0.15 * cell_sz, 0.15 * cell_sz))
-        gy += float(rng.uniform(-0.15 * cell_sz, 0.15 * cell_sz))
-        seeds.append((float(np.clip(gx, min_x, max_x)), float(np.clip(gy, min_y, max_y))))
+        n_edge = int(num_streamlines * 0.60)
+        n_interior = num_streamlines - n_edge
 
-    # --- Trace each seed with RK4 -------------------------------------------
+        abs_u = abs(u_base)
+        abs_v = abs(v_base)
+        total = abs_u + abs_v + 1e-9
+        n_hori = max(1, round(n_edge * abs_v / total))
+        n_vert = n_edge - n_hori
+
+        def _jitter(val: float, spacing: float) -> float:
+            return float(val + rng.uniform(-0.1 * spacing, 0.1 * spacing))
+
+        edge_x = min_x if u_base >= 0 else max_x
+        if n_vert > 1:
+            spacing_v = proj_h / (n_vert - 1)
+            for i in range(n_vert):
+                y = _jitter(min_y + i * spacing_v, spacing_v)
+                seeds.append((edge_x, float(np.clip(y, min_y, max_y))))
+        else:
+            seeds.append((edge_x, (min_y + max_y) / 2.0))
+
+        edge_y = min_y if v_base >= 0 else max_y
+        if n_hori > 1:
+            spacing_h = proj_w / (n_hori - 1)
+            for i in range(n_hori):
+                x = _jitter(min_x + i * spacing_h, spacing_h)
+                seeds.append((float(np.clip(x, min_x, max_x)), edge_y))
+        else:
+            seeds.append(((min_x + max_x) / 2.0, edge_y))
+
+        _N_grid = speed_mag.shape[0]
+        flat_w = speed_mag.flatten() ** 0.55
+        flat_w = flat_w / flat_w.sum()
+        flat_idx = rng.choice(len(flat_w), size=n_interior, p=flat_w.astype(float))
+        cell_sz = max(proj_w, proj_h) / max(1, _N_grid - 1)
+        for idx in flat_idx:
+            row_g = int(idx) // _N_grid
+            col_g = int(idx) % _N_grid
+            gx = min_x + (col_g / max(1, _N_grid - 1)) * proj_w
+            gy = max_y - (row_g / max(1, _N_grid - 1)) * proj_h
+            gx += float(rng.uniform(-0.15 * cell_sz, 0.15 * cell_sz))
+            gy += float(rng.uniform(-0.15 * cell_sz, 0.15 * cell_sz))
+            seeds.append((float(np.clip(gx, min_x, max_x)), float(np.clip(gy, min_y, max_y))))
+
+    # --- Trace each seed with RK4 --------------------------------------------
     streamlines: list[list[tuple[float, float, float]]] = []
 
     for sx, sy in seeds:
-        # Variable length: starting speed determines how many steps this
-        # streamline gets.  Fast start → full budget; calm start → min_steps.
-        u0, v0 = _sample_wind(u_field, v_field, sx, sy, bounds_projected)
-        s0 = math.sqrt(u0 * u0 + v0 * v0)
-        s0_norm = min(1.0, s0 / global_p90)
-        this_steps = int(min_steps + s0_norm * (steps - min_steps))
+        if use_grid:
+            # In grid mode all arrows get the same fixed step budget.
+            this_steps = steps
+        else:
+            # Legacy variable-length: faster start → more steps.
+            u0, v0 = _sample_wind(u_field, v_field, sx, sy, bounds_projected)
+            s0 = math.sqrt(u0 * u0 + v0 * v0)
+            s0_norm = min(1.0, s0 / global_p90)
+            this_steps = int(min_steps + s0_norm * (steps - min_steps))
 
         x, y = sx, sy
         trail: list[tuple[float, float, float]] = []
 
         for _ in range(this_steps):
-            # Stagnation check at current position.
             u, v = _sample_wind(u_field, v_field, x, y, bounds_projected)
             spd = math.sqrt(u * u + v * v)
             if spd < min_speed:
@@ -401,12 +424,9 @@ def trace_streamlines(
 
             trail.append((x, y, spd))
 
-            # RK4 advance.
             nx, ny, _ = _rk4_step(u_field, v_field, x, y, bounds_projected, step_size)
 
-            # Bounds check — stop if we've left the map.
             if not (min_x <= nx <= max_x and min_y <= ny <= max_y):
-                # Record the last in-bounds point, then stop.
                 trail.append((nx, ny, spd))
                 break
 
