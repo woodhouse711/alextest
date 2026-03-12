@@ -368,10 +368,10 @@ def _render_wind_streamlines(
     if not streamlines:
         return
 
-    g = dwg.g(id="wind-streamlines", clip_path=f"url(#{clip_id})", opacity=0.5)
+    g = dwg.g(id="wind-streamlines", clip_path=f"url(#{clip_id})")
 
     _N_SEGS = 20          # polyline chunks per streamline
-    _COLOR  = "#2E3F50"   # cool dark blue-gray
+    _COLOR  = "#BFE8D9"   # soft light cyan
 
     # --- Global speed normalisation -----------------------------------------
     # Collect mean speed per streamline; normalise against the 90th percentile
@@ -398,8 +398,10 @@ def _render_wind_streamlines(
         # speed_norm ∈ [0, 1]: 0 = calm, 1 = at or above 90th-pct speed.
         speed_norm = min(1.0, mean_spd / p90_speed)
 
-        # Opacity: faint in calm zones, clearly visible in gusty zones.
-        opacity = round(0.08 + 0.24 * speed_norm, 3)
+        # Opacity applied once on a per-streamline group so the tapered
+        # segments (which share endpoints) compose flat against each other
+        # before blending with the map — prevents cap-on-cap darkening.
+        opacity = round(0.25 + 0.75 * speed_norm, 3)
 
         # Head stroke width: scales with speed.  Tail is always a hairline.
         w_tail = 0.03
@@ -407,7 +409,10 @@ def _render_wind_streamlines(
 
         n_pts  = len(stream)
         svg_pts = [proj_to_svg(float(x), float(y)) for x, y, _ in stream]
-        speeds  = [spd for _, _, spd in stream]
+
+        # Each streamline is its own isolated group: segments render at
+        # opacity=1 internally, then the group fades as a unit.
+        sg = dwg.g(opacity=opacity, style="isolation:isolate")
 
         for seg_i in range(_N_SEGS):
             i_start = int(round(seg_i       / _N_SEGS * (n_pts - 1)))
@@ -427,14 +432,13 @@ def _render_wind_streamlines(
             ramp  = t_mid ** 0.6
             w = w_tail + (w_head - w_tail) * ramp
 
-            g.add(dwg.polyline(
+            sg.add(dwg.polyline(
                 seg_svg,
                 stroke=_COLOR,
                 stroke_width=round(w, 4),
                 stroke_linecap="round",
                 stroke_linejoin="round",
                 fill="none",
-                opacity=opacity,
             ))
 
         # --- Arrowhead at the terminus --------------------------------------
@@ -458,12 +462,13 @@ def _render_wind_streamlines(
                 pt1 = (base_x + perpx * half_base, base_y + perpy * half_base)
                 pt2 = (base_x - perpx * half_base, base_y - perpy * half_base)
 
-                g.add(dwg.polygon(
+                sg.add(dwg.polygon(
                     [(tx, ty), pt1, pt2],
                     fill=_COLOR,
                     stroke="none",
-                    opacity=opacity,
                 ))
+
+        g.add(sg)
 
     dwg.add(g)
 
@@ -1777,6 +1782,12 @@ def render_terrain_svg(
     # ------------------------------------------------------------------
     dwg.add(dwg.rect(
         insert=(0, 0), size=(width_mm, height_mm), fill="white", stroke="none",
+    ))
+
+    # Cream underlay — map area only, below hillshade and all vector layers.
+    dwg.add(dwg.rect(
+        insert=(offset_x, offset_y), size=(map_w_mm, map_h_mm),
+        fill="#FAEEC6", stroke="none",
     ))
 
     # Define a clip path that constrains all map content to the map rectangle.
