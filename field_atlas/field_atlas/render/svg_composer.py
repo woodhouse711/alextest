@@ -371,7 +371,7 @@ def _render_wind_streamlines(
     g = dwg.g(id="wind-streamlines", clip_path=f"url(#{clip_id})")
 
     _N_SEGS = 20          # polyline chunks per streamline
-    _COLOR  = "#BFE8D9"   # soft light cyan
+    _COLOR  = "#C6DDE8"   # soft light blue
 
     # --- Global speed normalisation -----------------------------------------
     # Collect mean speed per streamline; normalise against the 90th percentile
@@ -1787,7 +1787,7 @@ def render_terrain_svg(
     # Cream underlay — map area only, below hillshade and all vector layers.
     dwg.add(dwg.rect(
         insert=(offset_x, offset_y), size=(map_w_mm, map_h_mm),
-        fill="#FAEEC6", stroke="none",
+        fill="#FAEEC6", stroke="none", opacity=0.25,
     ))
 
     # Define a clip path that constrains all map content to the map rectangle.
@@ -1813,16 +1813,36 @@ def render_terrain_svg(
             _hs_img.save(_buf, format="PNG", optimize=False)
             _b64 = _base64.b64encode(_buf.getvalue()).decode("ascii")
             _href = f"data:image/png;base64,{_b64}"
-            _img_el = dwg.image(
-                href=_href,
-                insert=(offset_x, offset_y),
-                size=(map_w_mm, map_h_mm),
-            )
+
+            # Position the image using the DEM's actual geographic extent so it
+            # aligns with the projected map coordinates rather than being naively
+            # stretched to fill the map frame.  hillshade_transform is a rasterio
+            # Affine (WGS84): transform * (col, row) → (lng, lat).
+            if hillshade_transform is not None and transformer is not None:
+                _hs_rows, _hs_cols = hillshade.shape
+                _corners_pix = [
+                    (0,          0         ),
+                    (_hs_cols,   0         ),
+                    (_hs_cols,   _hs_rows  ),
+                    (0,          _hs_rows  ),
+                ]
+                _corners_svg = []
+                for _pc, _pr in _corners_pix:
+                    _lng, _lat = hillshade_transform * (_pc, _pr)
+                    _e, _n = transformer.transform(_lat, _lng)
+                    _corners_svg.append(proj_to_svg(_e, _n))
+                _hxs = [p[0] for p in _corners_svg]
+                _hys = [p[1] for p in _corners_svg]
+                _hs_insert = (min(_hxs), min(_hys))
+                _hs_size   = (max(_hxs) - min(_hxs), max(_hys) - min(_hys))
+            else:
+                # Fallback: stretch to map frame (no geo-transform available).
+                _hs_insert = (offset_x, offset_y)
+                _hs_size   = (map_w_mm, map_h_mm)
+
+            _img_el = dwg.image(href=_href, insert=_hs_insert, size=_hs_size)
             _img_el["style"] = "mix-blend-mode:multiply;"
-            _hs_g = dwg.g(
-                clip_path="url(#map-area)",
-                opacity=0.11,
-            )
+            _hs_g = dwg.g(clip_path="url(#map-area)", opacity=0.11)
             _hs_g.add(_img_el)
             dwg.add(_hs_g)
         except Exception as _hs_err:
