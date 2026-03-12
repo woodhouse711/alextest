@@ -38,9 +38,9 @@ _WATER_TYPES  = frozenset({"water", "pond", "reservoir"})
 # minor = every      interval (e.g.  10 m at 10 m interval)
 # Colors are pure grayscale percentages; no RGB variation.
 _CONTOUR_TIERS: dict[str, tuple[str, float]] = {
-    "major": ("#2A2A2A", 0.28),   # near-black — heavy/primary
-    "index": ("#555555", 0.18),   # dark gray — medium
-    "minor": ("#888888", 0.09),   # mid gray — light
+    "major": ("#2A2A2A", 0.56),   # near-black — heavy/primary
+    "index": ("#555555", 0.36),   # dark gray — medium
+    "minor": ("#888888", 0.18),   # mid gray — light
 }
 
 # Index contour label style
@@ -450,8 +450,8 @@ def _render_wind_streamlines(
                 perpx, perpy = -uy, ux               # perpendicular unit vector
 
                 # Scale arrowhead with head width so faint lines have tiny tips.
-                depth = w_head * 2.2
-                half_base = w_head * 0.85
+                depth = w_head * 4.4
+                half_base = w_head * 1.70
 
                 base_x = tx - ux * depth
                 base_y = ty - uy * depth
@@ -1806,10 +1806,14 @@ def render_terrain_svg(
                 href=_href,
                 insert=(offset_x, offset_y),
                 size=(map_w_mm, map_h_mm),
-                clip_path="url(#map-area)",
             )
-            _img_el["style"] = "mix-blend-mode:multiply;opacity:0.45;"
-            dwg.add(_img_el)
+            _img_el["style"] = "mix-blend-mode:multiply;"
+            _hs_g = dwg.g(
+                clip_path="url(#map-area)",
+                opacity=0.11,
+            )
+            _hs_g.add(_img_el)
+            dwg.add(_hs_g)
         except Exception as _hs_err:
             pass  # degrade gracefully if PIL unavailable
 
