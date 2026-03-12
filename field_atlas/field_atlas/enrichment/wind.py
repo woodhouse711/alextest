@@ -250,12 +250,19 @@ def trace_streamlines(
     bounds_projected: dict,
     num_streamlines: int = 60,
     steps: int = 120,
+    min_steps: int = 18,
     step_size: float | None = None,
     wind_direction_deg: float = 225.0,
     wind_speed_kmh: float = 19.0,
     seed: int = 42,
 ) -> list[list[tuple[float, float, float]]]:
     """Trace streamlines through the wind vector field using RK4 integration.
+
+    Streamline length and density vary with local wind speed: fast zones
+    produce longer, more densely seeded lines; calm zones produce short
+    stubs.  This encodes wind intensity spatially in the same way the
+    Apple Weather wind visualization does — the *pattern* of strokes
+    communicates speed as clearly as any single-line property.
 
     Parameters
     ----------
@@ -267,7 +274,13 @@ def trace_streamlines(
     num_streamlines:
         Total number of streamlines to trace.
     steps:
-        Maximum integration steps per streamline.
+        *Maximum* integration steps for the fastest streamlines.
+    min_steps:
+        *Minimum* integration steps for the slowest streamlines.
+        Length is interpolated between ``min_steps`` and ``steps``
+        proportionally to the starting-point speed (relative to the
+        field's 90th-percentile speed).  Default 18 → slow lines cover
+        ~15 % of the map extent.
     step_size:
         Physical step length in metres.  Auto-computed when ``None``:
         ``max(extent_x, extent_y) / (steps * 2.5)``.
@@ -300,12 +313,18 @@ def trace_streamlines(
 
     min_speed = max(0.05 * wind_speed_kmh, 0.5)  # stagnation threshold km/h
 
-    # --- Seed placement: 80% upwind edges, 20% interior --------------------
+    # --- Speed magnitude field for density-weighted seeding -----------------
+    speed_mag = np.sqrt(u_field.astype(float) ** 2 + v_field.astype(float) ** 2)
+    # 90th-percentile speed for variable-length normalisation.
+    global_p90 = float(np.percentile(speed_mag, 90))
+    global_p90 = max(global_p90, wind_speed_kmh * 0.1, 1e-6)
+
+    # --- Seed placement: 60% upwind edges, 40% speed-density interior -------
     dir_rad = math.radians(wind_direction_deg)
     u_base = -math.sin(dir_rad)   # eastward component of unit flow vector
     v_base = -math.cos(dir_rad)   # northward component
 
-    n_edge = int(num_streamlines * 0.80)
+    n_edge = int(num_streamlines * 0.60)
     n_interior = num_streamlines - n_edge
 
     seeds: list[tuple[float, float]] = []
@@ -341,21 +360,39 @@ def trace_streamlines(
     else:
         seeds.append(((min_x + max_x) / 2.0, edge_y))
 
-    # Interior seeds fill gaps where upwind streamlines diverge:
-    for _ in range(n_interior):
-        seeds.append((
-            float(rng.uniform(min_x + 0.1 * proj_w, max_x - 0.1 * proj_w)),
-            float(rng.uniform(min_y + 0.1 * proj_h, max_y - 0.1 * proj_h)),
-        ))
+    # Interior seeds: speed-density weighted so high-velocity zones receive
+    # proportionally more seeds and therefore more strokes.
+    # Sub-linear exponent (0.55) keeps some coverage in calm areas.
+    _N_grid = speed_mag.shape[0]
+    flat_w = speed_mag.flatten() ** 0.55
+    flat_w = flat_w / flat_w.sum()
+    flat_idx = rng.choice(len(flat_w), size=n_interior, p=flat_w.astype(float))
+    cell_sz = max(proj_w, proj_h) / max(1, _N_grid - 1)
+    for idx in flat_idx:
+        row_g = int(idx) // _N_grid
+        col_g = int(idx) % _N_grid
+        gx = min_x + (col_g / max(1, _N_grid - 1)) * proj_w
+        gy = max_y - (row_g / max(1, _N_grid - 1)) * proj_h
+        # Jitter within ±15 % of one grid cell to break up regularity.
+        gx += float(rng.uniform(-0.15 * cell_sz, 0.15 * cell_sz))
+        gy += float(rng.uniform(-0.15 * cell_sz, 0.15 * cell_sz))
+        seeds.append((float(np.clip(gx, min_x, max_x)), float(np.clip(gy, min_y, max_y))))
 
     # --- Trace each seed with RK4 -------------------------------------------
     streamlines: list[list[tuple[float, float, float]]] = []
 
     for sx, sy in seeds:
+        # Variable length: starting speed determines how many steps this
+        # streamline gets.  Fast start → full budget; calm start → min_steps.
+        u0, v0 = _sample_wind(u_field, v_field, sx, sy, bounds_projected)
+        s0 = math.sqrt(u0 * u0 + v0 * v0)
+        s0_norm = min(1.0, s0 / global_p90)
+        this_steps = int(min_steps + s0_norm * (steps - min_steps))
+
         x, y = sx, sy
         trail: list[tuple[float, float, float]] = []
 
-        for _ in range(steps):
+        for _ in range(this_steps):
             # Stagnation check at current position.
             u, v = _sample_wind(u_field, v_field, x, y, bounds_projected)
             spd = math.sqrt(u * u + v * v)
