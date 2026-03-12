@@ -403,14 +403,17 @@ def trace_streamlines(
     streamlines: list[list[tuple[float, float, float]]] = []
 
     for sx, sy in seeds:
+        # Variable length: faster wind → more steps → longer arrow.
+        u0, v0 = _sample_wind(u_field, v_field, sx, sy, bounds_projected)
+        s0 = math.sqrt(u0 * u0 + v0 * v0)
+        s0_norm = min(1.0, s0 / global_p90)
         if use_grid:
-            # In grid mode all arrows get the same fixed step budget.
-            this_steps = steps
+            # Grid mode: steps param is the *maximum*; minimum is 3.
+            # Squaring the norm gives higher contrast — calm areas stay short
+            # while fast areas get the full budget.
+            this_steps = max(3, int(round(3 + (steps - 3) * s0_norm ** 2)))
         else:
-            # Legacy variable-length: faster start → more steps.
-            u0, v0 = _sample_wind(u_field, v_field, sx, sy, bounds_projected)
-            s0 = math.sqrt(u0 * u0 + v0 * v0)
-            s0_norm = min(1.0, s0 / global_p90)
+            # Legacy variable-length: min_steps to steps linearly.
             this_steps = int(min_steps + s0_norm * (steps - min_steps))
 
         x, y = sx, sy

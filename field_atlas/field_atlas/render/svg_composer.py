@@ -406,7 +406,7 @@ def _render_wind_streamlines(
         w_head = 0.15 + 0.33 * speed_norm   # 0.15 (calm) → 0.48 mm (gusty)
 
         n_pts  = len(stream)
-        svg_pts = [proj_to_svg(x, y) for x, y, _ in stream]
+        svg_pts = [proj_to_svg(float(x), float(y)) for x, y, _ in stream]
         speeds  = [spd for _, _, spd in stream]
 
         for seg_i in range(_N_SEGS):
