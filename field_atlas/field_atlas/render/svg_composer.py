@@ -339,43 +339,43 @@ def _render_wind_streamlines(
     proj_to_svg: "Callable[[float, float], tuple[float, float]]",
     clip_id: str = "map-area",
 ) -> None:
-    """Render pre-computed wind streamlines with speed-encoded visual weight.
+    """Render pre-computed wind streamlines with a luminous, hint.fm-inspired aesthetic.
 
-    Each streamline uses a *directional taper*: hairline at the tail (origin),
-    thickening toward the head (destination), plus a small filled arrowhead at
-    the tip.  This encodes flow direction without animation — the stroke reads
-    like a moving particle frozen in place.
-
-    Opacity and maximum stroke width are both proportional to the streamline's
-    mean speed relative to the 90th-percentile speed across all streamlines.
-    Fast zones are therefore visually denser and bolder; calm zones are nearly
-    invisible stubs — the same principle used in the Apple Weather wind layer.
+    Each streamline is a tapered stroke — hairline at the tail, thicker at the
+    head — rendered with a soft Gaussian glow filter.  The result reads like
+    long-exposure light streaks: direction implied by the taper, intensity
+    proportional to wind speed.  No arrowheads are drawn; the taper alone
+    carries the directionality, keeping the layer atmospheric rather than
+    navigational.
 
     Rendering parameters
     --------------------
-    * Color: ``#2E3F50`` — cool dark blue-gray (implies cold/moving air; does
-      not clash with the teal/blue route palette or gray contours).
-    * Opacity: 0.08 (calm) → 0.32 (gusty).
-    * Tail width: 0.03 mm (hairline) for all streamlines.
-    * Head width: 0.15 mm (calm) → 0.48 mm (gusty).
-    * Arrowhead: filled triangle, depth ≈ 2× head width, at terminus.
-    * Segments per streamline: 20 — same element count as before.
+    * Color: ``#4A9CC7`` — vibrant sky blue, luminous against cream/hillshade.
+    * Glow: SVG ``feGaussianBlur`` + ``feMerge`` halo (stdDeviation 0.25 mm).
+    * Opacity: 0.05 (dead calm) → 0.55 (gusty), very dramatic range so fast
+      zones blaze while stagnant pockets nearly vanish.
+    * Tail width: 0.02 mm (hairline); Head width: 0.10 mm (calm) → 0.32 mm (gusty).
+    * Taper curve: square-root ramp (builds quickly away from the tail).
+    * Segments per streamline: 40 for a smooth gradient.
 
     Layer placement: above graticule, below contours.
     """
-    import math as _math
-
     if not streamlines:
         return
 
+    _N_SEGS = 40
+    _COLOR  = "#4A9CC7"   # vibrant sky blue
+    _FILTER_ID = "wind-glow"
+
+    # --- Add glow filter to <defs> (once per drawing) -----------------------
+    _f = dwg.filter(id=_FILTER_ID, x="-40%", y="-40%", width="180%", height="180%")
+    _f.feGaussianBlur(in_="SourceGraphic", stdDeviation=0.25, result="blur")
+    _f.feMerge(["blur", "SourceGraphic"])
+    dwg.defs.add(_f)
+
     g = dwg.g(id="wind-streamlines", clip_path=f"url(#{clip_id})")
 
-    _N_SEGS = 20          # polyline chunks per streamline
-    _COLOR  = "#3D7CA3"   # medium blue — clearly legible against cream/hillshade
-
     # --- Global speed normalisation -----------------------------------------
-    # Collect mean speed per streamline; normalise against the 90th percentile
-    # so a handful of very fast outliers don't compress everything else to zero.
     mean_speeds: list[float] = []
     for stream in streamlines:
         if len(stream) >= 3:
@@ -398,21 +398,23 @@ def _render_wind_streamlines(
         # speed_norm ∈ [0, 1]: 0 = calm, 1 = at or above 90th-pct speed.
         speed_norm = min(1.0, mean_spd / p90_speed)
 
-        # Opacity applied once on a per-streamline group so the tapered
-        # segments (which share endpoints) compose flat against each other
-        # before blending with the map — prevents cap-on-cap darkening.
-        opacity = round(0.60 + 0.40 * speed_norm, 3)
+        # Wide dynamic range: nearly invisible in calm zones, bright in fast
+        # zones.  The glow filter amplifies the contrast further.
+        opacity = round(0.05 + 0.50 * speed_norm, 3)
 
-        # Head stroke width: scales with speed.  Tail is always a hairline.
-        w_tail = 0.03
-        w_head = 0.15 + 0.33 * speed_norm   # 0.15 (calm) → 0.48 mm (gusty)
+        # Thinner lines — the glow adds visual weight without bulk.
+        w_tail = 0.02
+        w_head = 0.10 + 0.22 * speed_norm   # 0.10 (calm) → 0.32 mm (gusty)
 
         n_pts  = len(stream)
         svg_pts = [proj_to_svg(float(x), float(y)) for x, y, _ in stream]
 
-        # Each streamline is its own isolated group: segments render at
-        # opacity=1 internally, then the group fades as a unit.
-        sg = dwg.g(opacity=opacity, style="isolation:isolate")
+        # Each streamline is an isolated group with the glow filter applied.
+        sg = dwg.g(
+            opacity=opacity,
+            style="isolation:isolate",
+            filter=f"url(#{_FILTER_ID})",
+        )
 
         for seg_i in range(_N_SEGS):
             i_start = int(round(seg_i       / _N_SEGS * (n_pts - 1)))
@@ -425,11 +427,11 @@ def _render_wind_streamlines(
             if len(seg_svg) < 2:
                 continue
 
-            # Directional taper: t=0 at tail, t=1 at head.
-            # Use a power curve (exponent 0.6) so width builds quickly in the
-            # middle third rather than accumulating only at the very tip.
+            # Square-root taper: t=0 at tail, t=1 at head.
+            # Builds quickly so the middle of the line is already noticeably
+            # wider — like a comet with a thick bright body.
             t_mid = (seg_i + 0.5) / _N_SEGS
-            ramp  = t_mid ** 0.6
+            ramp  = t_mid ** 0.5
             w = w_tail + (w_head - w_tail) * ramp
 
             sg.add(dwg.polyline(
@@ -440,33 +442,6 @@ def _render_wind_streamlines(
                 stroke_linejoin="round",
                 fill="none",
             ))
-
-        # --- Arrowhead at the terminus --------------------------------------
-        # Small filled triangle pointing in the direction of local flow.
-        # Only drawn when the last two projected points are meaningfully apart.
-        if len(svg_pts) >= 2:
-            tx, ty = svg_pts[-1]
-            px, py = svg_pts[-2]
-            ddx, ddy = tx - px, ty - py
-            dist = _math.sqrt(ddx * ddx + ddy * ddy)
-            if dist > 1e-6:
-                ux, uy = ddx / dist, ddy / dist      # unit flow direction
-                perpx, perpy = -uy, ux               # perpendicular unit vector
-
-                # Scale arrowhead with head width so faint lines have tiny tips.
-                depth = w_head * 4.4
-                half_base = w_head * 1.70
-
-                base_x = tx - ux * depth
-                base_y = ty - uy * depth
-                pt1 = (base_x + perpx * half_base, base_y + perpy * half_base)
-                pt2 = (base_x - perpx * half_base, base_y - perpy * half_base)
-
-                sg.add(dwg.polygon(
-                    [(tx, ty), pt1, pt2],
-                    fill=_COLOR,
-                    stroke="none",
-                ))
 
         g.add(sg)
 

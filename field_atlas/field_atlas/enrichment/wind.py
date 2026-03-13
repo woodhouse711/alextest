@@ -349,7 +349,7 @@ def trace_streamlines(
     else:
         # --- Legacy: 60 % upwind edges + 40 % speed-density interior ---------
         if step_size is None:
-            step_size = max(proj_w, proj_h) / (steps * 2.5)
+            step_size = max(proj_w, proj_h) / (steps * 1.8)
 
         dir_rad = math.radians(wind_direction_deg)
         u_base = -math.sin(dir_rad)

@@ -219,7 +219,7 @@ def cli() -> None:
 )
 @click.option(
     "--wind-streamlines",
-    default=60,
+    default=200,
     show_default=True,
     metavar="N",
     help=(
