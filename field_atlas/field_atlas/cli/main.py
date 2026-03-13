@@ -24,7 +24,8 @@ from field_atlas.core.dem_fetcher import fetch_dem, load_dem
 from field_atlas.core.gpx_parser import TrackData, padded_bounds, parse_gpx
 from field_atlas.core.projection import get_projection, project_bounds, project_points
 from field_atlas.core.terrain_processor import generate_contours, generate_hillshade
-from field_atlas.enrichment.features import load_features_from_file
+from field_atlas.enrichment.dem_features import detect_lakes, detect_peaks
+from field_atlas.enrichment.features import FeatureSet, load_features_from_file
 from field_atlas.enrichment.models import EnrichmentData, derive_location_name, enrich, format_info_block
 from field_atlas.enrichment.wind import (
     build_wind_field,
@@ -424,6 +425,15 @@ def render(
                     bounds_projected=projected_bounds,
                 )
                 _date_int = int(date.replace("-", "")) if date else 42
+                # Grid seeding: uniform coverage like the hint.fm wind map.
+                # Compute grid dimensions from the map aspect ratio so cells
+                # are roughly square and the total count ≈ wind_streamlines.
+                import math as _math
+                _pw = projected_bounds["max_x"] - projected_bounds["min_x"]
+                _ph = projected_bounds["max_y"] - projected_bounds["min_y"]
+                _aspect = _pw / _ph if _ph > 0 else 1.0
+                _grid_cols = max(6, int(round(_math.sqrt(wind_streamlines * _aspect))))
+                _grid_rows = max(6, int(round(wind_streamlines / _grid_cols)))
                 computed_streamlines = trace_streamlines(
                     u_field, v_field,
                     bounds_projected=projected_bounds,
@@ -431,6 +441,8 @@ def render(
                     wind_direction_deg=w.wind_direction_dominant_deg,
                     wind_speed_kmh=w.wind_speed_max_kmh,
                     seed=_date_int,
+                    grid_rows=_grid_rows,
+                    grid_cols=_grid_cols,
                 )
                 click.echo(
                     f"  Wind:     {len(computed_streamlines)} streamlines"
@@ -444,6 +456,34 @@ def render(
                     pass
             except Exception as exc:
                 click.echo(f"  Wind:     streamline computation failed — {exc}", err=True)
+
+    # ------------------------------------------------------------------
+    # Step 8c: DEM-based features — peaks and lakes (offline fallback)
+    # ------------------------------------------------------------------
+    # Run when OSM features / vectors are unavailable so that peaks and
+    # lake fills always appear even without a network connection.
+    dem_peaks = []
+    try:
+        dem_peaks = detect_peaks(elevation, projected_bounds, transformer)
+        if dem_peaks:
+            click.echo(f"  Peaks:    {len(dem_peaks)} detected from DEM")
+    except Exception as exc:
+        click.echo(f"  Peaks:    DEM detection failed — {exc}", err=True)
+
+    # Inject DEM lakes into osm_vectors when the vectors layer has no water areas
+    _has_water = osm_vectors is not None and bool(osm_vectors.water_areas)
+    if not _has_water:
+        try:
+            from field_atlas.enrichment.osm_vectors import OSMVectors
+            dem_lakes = detect_lakes(elevation, projected_bounds, transformer)
+            if dem_lakes:
+                click.echo(f"  Lakes:    {len(dem_lakes)} detected from DEM")
+                if osm_vectors is None:
+                    osm_vectors = OSMVectors(roads=[], waterways=[], water_areas=dem_lakes, trails=[])
+                else:
+                    osm_vectors.water_areas.extend(dem_lakes)
+        except Exception as exc:
+            click.echo(f"  Lakes:    DEM detection failed — {exc}", err=True)
 
     # ------------------------------------------------------------------
     # Step 9: Render SVG
@@ -488,6 +528,7 @@ def render(
         route_palette=route_palette,
         route_width=route_width,
         wind_streamlines=computed_streamlines,
+        peak_markers=dem_peaks or None,
     )
 
     # ------------------------------------------------------------------

@@ -23,9 +23,11 @@ if TYPE_CHECKING:
 # Feature label style constants
 # ---------------------------------------------------------------------------
 
-_PEAK_COLOR   = "#3A3A3A"
-_WATER_COLOR  = "#7BA7BC"
-_OTHER_COLOR  = "#888888"
+_PEAK_COLOR      = "#3A3A3A"
+_WATER_COLOR     = "#7BA7BC"
+_WATER_FILL      = "#A8C8CC"   # muted teal fill for lake polygons
+_WATER_STROKE    = "#6E9EA6"   # slightly darker teal outline
+_OTHER_COLOR     = "#888888"
 _FONT_MM_STD  = 2.12     # ≈ 6pt
 _FONT_MM_SML  = 1.76     # ≈ 5pt
 _CHAR_W_FACTOR = 0.58    # estimated rendered char width / font_size
@@ -110,6 +112,47 @@ def _add_feature_marker(
         g.add(dwg.polygon(pts, fill=_PEAK_COLOR, stroke="none"))
         return r + _MARKER_GAP
     return 0.0  # "none" — text only, no horizontal offset needed
+
+
+def _render_peak_crosshairs(
+    dwg: "svgwrite.Drawing",
+    peak_markers: list,
+    transformer: "pyproj.Transformer",
+    proj_to_svg: "Callable[[float, float], tuple[float, float]]",
+    map_x0: float,
+    map_y0: float,
+    map_x1: float,
+    map_y1: float,
+) -> None:
+    """Render hairline + crosshairs at every detected peak location.
+
+    Drawn as a separate unlabelled layer — a subtle cartographic texture that
+    marks high points without competing with the feature-label layer.  Each
+    mark is two hairline strokes (1.6 mm span, 0.14 mm weight) centred on the
+    projected peak position.
+    """
+    if not peak_markers:
+        return
+
+    g = dwg.g(id="peak-crosshairs")
+    arm = 0.80   # half-arm length (mm) — total span 1.6 mm
+    lw  = 0.14   # hairline stroke weight
+
+    for feat in peak_markers:
+        easting, northing = transformer.transform(feat.lat, feat.lng)
+        sx, sy = proj_to_svg(easting, northing)
+        if not (map_x0 <= sx <= map_x1 and map_y0 <= sy <= map_y1):
+            continue
+        g.add(dwg.line(
+            start=(sx - arm, sy), end=(sx + arm, sy),
+            stroke=_PEAK_COLOR, stroke_width=lw, stroke_linecap="round",
+        ))
+        g.add(dwg.line(
+            start=(sx, sy - arm), end=(sx, sy + arm),
+            stroke=_PEAK_COLOR, stroke_width=lw, stroke_linecap="round",
+        ))
+
+    dwg.add(g)
 
 
 def _render_feature_labels(
@@ -262,8 +305,21 @@ def _render_osm_lower_layers(
     """
     clip = f"url(#{clip_id})"
 
-    # 1. Water areas — PAUSED: lake fill polygons disabled pending design review.
-    #    Waterway lines below remain active.
+    # 1. Water areas — filled lake/reservoir polygons ----------------------
+    if vectors.water_areas:
+        g_wa = dwg.g(id="water-areas", clip_path=clip)
+        for ring in vectors.water_areas:
+            pts = _project_osm_geom(ring, transformer, proj_to_svg)
+            if len(pts) < 3:
+                continue
+            g_wa.add(dwg.polygon(
+                pts,
+                fill=_WATER_FILL,
+                stroke=_WATER_STROKE,
+                stroke_width=0.18,
+                stroke_linejoin="round",
+            ))
+        dwg.add(g_wa)
 
     # 2. Waterways (blue-gray lines) ---------------------------------------
     g_ww = dwg.g(id="waterways", clip_path=clip)
@@ -1666,6 +1722,7 @@ def render_terrain_svg(
     route_palette: str = "coastal",
     route_width: float = 1.8,
     wind_streamlines: "list[list[tuple[float, float, float]]] | None" = None,
+    peak_markers: "list | None" = None,
 ) -> str:
     """Render contour lines and a hiking route as a print-ready SVG.
 
@@ -2140,7 +2197,19 @@ def render_terrain_svg(
         dwg.add(g_route)
 
     # ------------------------------------------------------------------
-    # 5. Feature labels
+    # 5a. Peak crosshairs — hairline marks at every detected high point
+    # ------------------------------------------------------------------
+    if peak_markers and transformer is not None:
+        _render_peak_crosshairs(
+            dwg, peak_markers, transformer, proj_to_svg,
+            map_x0=offset_x,
+            map_y0=offset_y,
+            map_x1=offset_x + map_w_mm,
+            map_y1=offset_y + map_h_mm,
+        )
+
+    # ------------------------------------------------------------------
+    # 5b. Feature labels
     # ------------------------------------------------------------------
     if enrichment is not None and transformer is not None:
         _render_feature_labels(
