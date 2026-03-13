@@ -491,17 +491,23 @@ def render(
     )
 
     # ------------------------------------------------------------------
-    # Step 10: Timestamped PDF export (vector; archived in docs/preview/)
+    # Step 10: Timestamped PDF + PNG export (archived in docs/preview/YYYY-MM-DD/)
     # ------------------------------------------------------------------
     import cairosvg
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    preview_dir = Path("docs") / "preview"
+    now = datetime.now()
+    ts = now.strftime("%H%M%S")
+    preview_dir = Path("docs") / "preview" / now.strftime("%Y-%m-%d")
     preview_dir.mkdir(parents=True, exist_ok=True)
     pdf_path = str(preview_dir / f"{slug}_{ts}.pdf")
+    png_path = str(preview_dir / f"{slug}_{ts}.png")
     try:
         cairosvg.svg2pdf(url=svg_path, write_to=pdf_path)
     except Exception as exc:
         pdf_path = f"(failed — {exc})"
+    try:
+        cairosvg.svg2png(url=svg_path, write_to=png_path, dpi=150)
+    except Exception as exc:
+        png_path = f"(failed — {exc})"
 
     # ------------------------------------------------------------------
     # Summary
@@ -551,6 +557,7 @@ def render(
     click.echo(f"  Contours: {n_levels} lines at {contour_interval:.0f}m interval")
     click.echo(f"  Output:   {svg_path}")
     click.echo(f"  PDF:      {pdf_path}")
+    click.echo(f"  PNG:      {png_path}")
 
 
 # ---------------------------------------------------------------------------
