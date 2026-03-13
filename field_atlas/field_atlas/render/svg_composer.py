@@ -341,37 +341,36 @@ def _render_wind_streamlines(
 ) -> None:
     """Render pre-computed wind streamlines with a luminous, hint.fm-inspired aesthetic.
 
-    Each streamline is a tapered stroke — hairline at the tail, thicker at the
-    head — rendered with a soft Gaussian glow filter.  The result reads like
-    long-exposure light streaks: direction implied by the taper, intensity
-    proportional to wind speed.  No arrowheads are drawn; the taper alone
-    carries the directionality, keeping the layer atmospheric rather than
-    navigational.
+    Each streamline is drawn in two passes to simulate a glow effect without
+    relying on SVG filter support (which cairosvg does not honour):
+
+    1. **Aura pass** — a wide, soft-edged stroke at low opacity that mimics
+       the diffuse glow around each wind particle in the hint.fm map.
+    2. **Core pass** — a narrow tapered stroke at higher opacity that gives
+       each line a bright, precise centre.
+
+    Together the two passes read like long-exposure light streaks.  Direction
+    is implied by the taper (thin tail → thick head); no arrowheads are drawn,
+    keeping the layer atmospheric rather than navigational.
 
     Rendering parameters
     --------------------
     * Color: ``#4A9CC7`` — vibrant sky blue, luminous against cream/hillshade.
-    * Glow: SVG ``feGaussianBlur`` + ``feMerge`` halo (stdDeviation 0.25 mm).
-    * Opacity: 0.05 (dead calm) → 0.55 (gusty), very dramatic range so fast
-      zones blaze while stagnant pockets nearly vanish.
-    * Tail width: 0.02 mm (hairline); Head width: 0.10 mm (calm) → 0.32 mm (gusty).
-    * Taper curve: square-root ramp (builds quickly away from the tail).
-    * Segments per streamline: 40 for a smooth gradient.
+    * Core opacity:  0.20 (calm) → 0.72 (gusty).
+    * Aura opacity:  0.05 (calm) → 0.18 (gusty)  [~25 % of core].
+    * Core widths:   tail 0.035 mm → head 0.20–0.52 mm.
+    * Aura widths:   tail 0.12  mm → head 0.65–1.70 mm  (3.25× core head).
+    * Taper curve:   square-root ramp for a comet-like thick body.
+    * Segments:      40 (core) / 20 (aura) per streamline.
 
     Layer placement: above graticule, below contours.
     """
     if not streamlines:
         return
 
-    _N_SEGS = 40
-    _COLOR  = "#4A9CC7"   # vibrant sky blue
-    _FILTER_ID = "wind-glow"
-
-    # --- Add glow filter to <defs> (once per drawing) -----------------------
-    _f = dwg.filter(id=_FILTER_ID, x="-40%", y="-40%", width="180%", height="180%")
-    _f.feGaussianBlur(in_="SourceGraphic", stdDeviation=0.25, result="blur")
-    _f.feMerge(["blur", "SourceGraphic"])
-    dwg.defs.add(_f)
+    _N_CORE = 40
+    _N_AURA = 20
+    _COLOR  = "#4A9CC7"
 
     g = dwg.g(id="wind-streamlines", clip_path=f"url(#{clip_id})")
 
@@ -395,53 +394,52 @@ def _render_wind_streamlines(
         if len(stream) < 4:
             continue
 
-        # speed_norm ∈ [0, 1]: 0 = calm, 1 = at or above 90th-pct speed.
         speed_norm = min(1.0, mean_spd / p90_speed)
 
-        # Wide dynamic range: nearly invisible in calm zones, bright in fast
-        # zones.  The glow filter amplifies the contrast further.
-        opacity = round(0.05 + 0.50 * speed_norm, 3)
+        # Core: visible even in calm zones; blazing in fast zones.
+        opacity_core = round(0.20 + 0.52 * speed_norm, 3)
+        # Aura: ~25 % of core opacity — creates the diffuse halo.
+        opacity_aura = round(0.05 + 0.13 * speed_norm, 3)
 
-        # Thinner lines — the glow adds visual weight without bulk.
-        w_tail = 0.02
-        w_head = 0.10 + 0.22 * speed_norm   # 0.10 (calm) → 0.32 mm (gusty)
+        # Core widths — thin tail, rounded head.
+        wc_tail = 0.035
+        wc_head = 0.20 + 0.32 * speed_norm   # 0.20 (calm) → 0.52 mm (gusty)
 
-        n_pts  = len(stream)
+        # Aura widths — ~3.25× the core head for a wide soft halo.
+        wa_tail = 0.12
+        wa_head = wc_head * 3.25
+
+        n_pts   = len(stream)
         svg_pts = [proj_to_svg(float(x), float(y)) for x, y, _ in stream]
 
-        # Each streamline is an isolated group with the glow filter applied.
-        sg = dwg.g(
-            opacity=opacity,
-            style="isolation:isolate",
-            filter=f"url(#{_FILTER_ID})",
-        )
+        sg = dwg.g(style="isolation:isolate")
 
-        for seg_i in range(_N_SEGS):
-            i_start = int(round(seg_i       / _N_SEGS * (n_pts - 1)))
-            i_end   = int(round((seg_i + 1) / _N_SEGS * (n_pts - 1)))
-            if i_end <= i_start:
-                i_end = i_start + 1
-            i_end = min(i_end, n_pts - 1)
+        def _add_pass(n_segs: int, w_tail: float, w_head: float, opacity: float) -> None:
+            pass_g = dwg.g(opacity=opacity)
+            for seg_i in range(n_segs):
+                i_start = int(round(seg_i       / n_segs * (n_pts - 1)))
+                i_end   = int(round((seg_i + 1) / n_segs * (n_pts - 1)))
+                if i_end <= i_start:
+                    i_end = i_start + 1
+                i_end = min(i_end, n_pts - 1)
+                seg_svg = svg_pts[i_start : i_end + 1]
+                if len(seg_svg) < 2:
+                    continue
+                t_mid = (seg_i + 0.5) / n_segs
+                ramp  = t_mid ** 0.5          # square-root: fast build from tail
+                w = w_tail + (w_head - w_tail) * ramp
+                pass_g.add(dwg.polyline(
+                    seg_svg,
+                    stroke=_COLOR,
+                    stroke_width=round(w, 4),
+                    stroke_linecap="round",
+                    stroke_linejoin="round",
+                    fill="none",
+                ))
+            sg.add(pass_g)
 
-            seg_svg = svg_pts[i_start : i_end + 1]
-            if len(seg_svg) < 2:
-                continue
-
-            # Square-root taper: t=0 at tail, t=1 at head.
-            # Builds quickly so the middle of the line is already noticeably
-            # wider — like a comet with a thick bright body.
-            t_mid = (seg_i + 0.5) / _N_SEGS
-            ramp  = t_mid ** 0.5
-            w = w_tail + (w_head - w_tail) * ramp
-
-            sg.add(dwg.polyline(
-                seg_svg,
-                stroke=_COLOR,
-                stroke_width=round(w, 4),
-                stroke_linecap="round",
-                stroke_linejoin="round",
-                fill="none",
-            ))
+        _add_pass(_N_AURA, wa_tail, wa_head, opacity_aura)   # soft halo first
+        _add_pass(_N_CORE, wc_tail, wc_head, opacity_core)   # sharp core on top
 
         g.add(sg)
 
