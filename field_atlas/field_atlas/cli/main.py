@@ -23,7 +23,12 @@ import click
 from field_atlas.core.dem_fetcher import fetch_dem, load_dem
 from field_atlas.core.gpx_parser import TrackData, padded_bounds, parse_gpx
 from field_atlas.core.projection import get_projection, project_bounds, project_points
-from field_atlas.core.terrain_processor import generate_contours, generate_hillshade
+from field_atlas.core.terrain_processor import (
+    generate_contours,
+    generate_hillshade,
+    generate_multidirectional_hillshade,
+    generate_hypsometric_rgba,
+)
 from field_atlas.enrichment.dem_features import detect_lakes, detect_peaks
 from field_atlas.enrichment.features import FeatureSet, load_features_from_file
 from field_atlas.enrichment.models import EnrichmentData, derive_location_name, enrich, format_info_block
@@ -369,9 +374,13 @@ def render(
             click.echo(f"Error: DEM fetch failed — {exc}", err=True)
             sys.exit(1)
 
-    # Hillshade from the raw elevation (preserve_geology=True smoothing inside
-    # generate_contours() is σ=0.3, gentle enough for hillshade too).
-    hillshade = generate_hillshade(elevation)
+    # Multi-directional hillshade + slope-based ambient occlusion.
+    # Combines NW primary, NE cross-light, and overhead diffuse fill for
+    # realistic depth on all slope faces (East-of-Nowhere style).
+    hillshade = generate_multidirectional_hillshade(elevation)
+
+    # Hypsometric (elevation-tint) RGBA layer — cool alpine blue-grey ramp.
+    hypsometric = generate_hypsometric_rgba(elevation, palette="alpine")
 
     # ------------------------------------------------------------------
     # Step 7: Generate contour lines
@@ -516,6 +525,7 @@ def render(
         transformer=transformer,
         hillshade=hillshade,
         hillshade_transform=meta["transform"],
+        hypsometric=hypsometric,
         track_name=track.name,
         date=display_date,
         distance_km=track.total_distance_km,

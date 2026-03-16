@@ -1709,6 +1709,7 @@ def render_terrain_svg(
     transformer: pyproj.Transformer | None = None,
     hillshade=None,
     hillshade_transform=None,
+    hypsometric=None,
     track_name: str = "",
     date: str = "",
     distance_km: float = 0.0,
@@ -1759,6 +1760,11 @@ def render_terrain_svg(
         Rasterio ``Affine`` object paired with *hillshade*; maps ``(col, row)``
         pixel indices to WGS84 ``(lng, lat)``.  Required when *hillshade* is
         not ``None``.
+    hypsometric:
+        Optional uint8 RGBA array of shape ``(rows, cols, 4)`` from
+        :func:`~field_atlas.core.terrain_processor.generate_hypsometric_rgba`.
+        Rendered as a colour-tint layer beneath the hillshade; high terrain
+        takes on the palette colour while low terrain remains near-transparent.
 
     Returns
     -------
@@ -1827,9 +1833,44 @@ def render_terrain_svg(
     _clip.add(dwg.rect(insert=(offset_x, offset_y), size=(map_w_mm, map_h_mm)))
 
     # ------------------------------------------------------------------
-    # 3b. Hillshade — embedded grayscale raster with multiply blend
+    # 3b. Hypsometric tint — RGBA colour ramp keyed to elevation.
+    #     Rendered below the hillshade so shadows remain sharp.
+    #     Alpha channel in the array already encodes per-pixel opacity:
+    #     low terrain is near-transparent; high terrain shows palette colour.
+    # ------------------------------------------------------------------
+    if hypsometric is not None and hillshade_transform is not None and transformer is not None:
+        import io as _io2
+        import base64 as _base64_2
+        try:
+            from PIL import Image as _PILImage2
+            _hyp_img = _PILImage2.fromarray(hypsometric, mode="RGBA")
+            _buf2 = _io2.BytesIO()
+            _hyp_img.save(_buf2, format="PNG", optimize=False)
+            _href2 = f"data:image/png;base64,{_base64_2.b64encode(_buf2.getvalue()).decode('ascii')}"
+
+            _hyp_rows, _hyp_cols = hypsometric.shape[:2]
+            _corners_pix2 = [(0, 0), (_hyp_cols, 0), (_hyp_cols, _hyp_rows), (0, _hyp_rows)]
+            _corners_svg2 = []
+            for _pc2, _pr2 in _corners_pix2:
+                _lng2, _lat2 = hillshade_transform * (_pc2, _pr2)
+                _e2, _n2 = transformer.transform(_lat2, _lng2)
+                _corners_svg2.append(proj_to_svg(_e2, _n2))
+            _hxs2 = [p[0] for p in _corners_svg2]
+            _hys2 = [p[1] for p in _corners_svg2]
+            _hyp_insert = (min(_hxs2), min(_hys2))
+            _hyp_size   = (max(_hxs2) - min(_hxs2), max(_hys2) - min(_hys2))
+
+            _hyp_el = dwg.image(href=_href2, insert=_hyp_insert, size=_hyp_size)
+            _hyp_g = dwg.g(clip_path="url(#map-area)", opacity=0.70)
+            _hyp_g.add(_hyp_el)
+            dwg.add(_hyp_g)
+        except Exception:
+            pass  # degrade gracefully if PIL unavailable
+
+    # ------------------------------------------------------------------
+    # 3c. Hillshade — embedded grayscale raster with multiply blend.
     #     White (lit) = no change; dark (shadow) darkens underlying layers.
-    #     Opacity kept modest so the cream background still reads clearly.
+    #     Opacity raised to 0.50 for dramatic East-of-Nowhere style depth.
     # ------------------------------------------------------------------
     if hillshade is not None:
         import io as _io
@@ -1872,7 +1913,7 @@ def render_terrain_svg(
 
             _img_el = dwg.image(href=_href, insert=_hs_insert, size=_hs_size)
             _img_el["style"] = "mix-blend-mode:multiply;"
-            _hs_g = dwg.g(clip_path="url(#map-area)", opacity=0.11)
+            _hs_g = dwg.g(clip_path="url(#map-area)", opacity=0.50)
             _hs_g.add(_img_el)
             dwg.add(_hs_g)
         except Exception as _hs_err:

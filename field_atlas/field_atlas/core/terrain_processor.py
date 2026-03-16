@@ -163,6 +163,141 @@ def generate_hillshade(
     return hillshade.astype(np.float32)
 
 
+def generate_multidirectional_hillshade(
+    elevation: np.ndarray,
+) -> np.ndarray:
+    """Compute a multi-directional hillshade with slope-based ambient occlusion.
+
+    Combines three illumination angles so every slope face has texture rather
+    than only the NW-facing aspects lit by a single source:
+
+    * Primary  NW 315° / 45° — standard cartographic convention (weight 0.55)
+    * Cross-light NE 45° / 25° — low-angle cross-lighting reveals rock texture
+      on east-facing and ridge faces (weight 0.20)
+    * Diffuse fill 315° / 80° — near-overhead sky, keeps shadows from pure
+      black and simulates diffuse sky light (weight 0.25)
+
+    A slope-based ambient occlusion term is then multiplied in: steep terrain
+    (cliffs, rugged ridges) is darkened uniformly, simulating sky-light
+    occlusion in deep valleys.  Flat areas are unaffected.
+
+    Parameters
+    ----------
+    elevation:
+        2-D float array of elevation values in metres (NaN = no-data).
+
+    Returns
+    -------
+    np.ndarray
+        Float32 array, same shape as *elevation*, values in [0, 1].
+        Values near 0 are deep shadow; values near 1 are fully lit.
+        NaN cells in the input remain NaN.
+    """
+    hs_primary    = generate_hillshade(elevation, azimuth=315.0, altitude=45.0)
+    hs_crosslight = generate_hillshade(elevation, azimuth=45.0,  altitude=25.0)
+    hs_fill       = generate_hillshade(elevation, azimuth=315.0, altitude=80.0)
+
+    combined = (
+        0.55 * np.where(np.isnan(hs_primary),    0.0, hs_primary)
+        + 0.20 * np.where(np.isnan(hs_crosslight), 0.0, hs_crosslight)
+        + 0.25 * np.where(np.isnan(hs_fill),       0.0, hs_fill)
+    )
+
+    # Slope-based ambient occlusion.
+    # np.gradient returns dz/d_pixel; ratio of axes is what matters.
+    dy, dx = np.gradient(np.where(np.isnan(elevation), 0.0, elevation))
+    # Normalise slope to [0, 1] where 1 ≈ 45° and beyond.
+    slope_norm = np.clip(np.arctan(np.sqrt(dx**2 + dy**2)) / (np.pi / 4.0), 0.0, 1.0)
+    # AO darkens steep terrain by up to 30%; flat areas untouched.
+    ao = 1.0 - 0.30 * slope_norm
+    combined = combined * ao
+
+    combined = np.clip(combined, 0.0, 1.0)
+    combined[np.isnan(elevation)] = np.nan
+    return combined.astype(np.float32)
+
+
+def generate_hypsometric_rgba(
+    elevation: np.ndarray,
+    palette: str = "alpine",
+) -> np.ndarray:
+    """Build an RGBA elevation-tint (hypsometric) image.
+
+    Maps normalised elevation to a colour ramp, producing a (rows, cols, 4)
+    uint8 array that can be embedded as a PNG in the SVG renderer.  The alpha
+    channel encodes opacity so the tint fades out at the lowest elevations,
+    keeping valleys and flatlands clean while high terrain takes on colour.
+
+    Palettes
+    --------
+    ``"alpine"``
+        Cool blue-grey ramp as seen in East of Nowhere mountain relief prints.
+        Lowlands are near-transparent cream; summits become deep slate-blue.
+    ``"topo"``
+        Warm earth tones: ochre lowlands → russet highlands, evocative of
+        historical USGS topo overlays.
+
+    Parameters
+    ----------
+    elevation:
+        2-D float array of elevation in metres.
+    palette:
+        ``"alpine"`` (default) or ``"topo"``.
+
+    Returns
+    -------
+    np.ndarray
+        uint8 array of shape ``(rows, cols, 4)`` — RGBA.  NaN cells are fully
+        transparent.
+    """
+    valid = elevation[~np.isnan(elevation)]
+    if valid.size == 0:
+        return np.zeros((*elevation.shape, 4), dtype=np.uint8)
+
+    z_min = float(valid.min())
+    z_max = float(valid.max())
+    z_range = z_max - z_min if z_max > z_min else 1.0
+
+    # t ∈ [0, 1]: 0 = lowest point, 1 = highest
+    t = np.clip((elevation - z_min) / z_range, 0.0, 1.0)
+
+    # --- colour ramps defined as (t_stop, R, G, B, A) ---
+    if palette == "topo":
+        stops = [
+            (0.00,  245, 235, 215,   0),   # cream  — fully transparent at base
+            (0.25,  230, 210, 170,  60),   # warm sand
+            (0.50,  200, 170, 120,  90),   # ochre
+            (0.75,  170, 120,  75, 115),   # russet
+            (1.00,  130,  75,  40, 140),   # deep brown
+        ]
+    else:  # "alpine" — cool blue-grey
+        stops = [
+            (0.00,  240, 242, 245,   0),   # near-white — fully transparent at base
+            (0.20,  210, 220, 230,  40),   # pale blue-grey
+            (0.45,  160, 185, 205,  85),   # mid blue-grey
+            (0.70,  100, 140, 175, 120),   # cool steel
+            (1.00,   55,  90, 130, 150),   # deep slate-blue
+        ]
+
+    t_stops = np.array([s[0] for s in stops], dtype=np.float32)
+    rgba_stops = np.array([[s[1], s[2], s[3], s[4]] for s in stops], dtype=np.float32)
+
+    rows, cols = elevation.shape
+    t_flat = t.ravel()
+
+    result_flat = np.zeros((t_flat.size, 4), dtype=np.float32)
+    for ch in range(4):
+        result_flat[:, ch] = np.interp(t_flat, t_stops, rgba_stops[:, ch])
+
+    result = result_flat.reshape(rows, cols, 4).astype(np.uint8)
+
+    # NaN cells → fully transparent
+    nan_mask = np.isnan(elevation)
+    result[nan_mask, 3] = 0
+
+    return result
+
+
 def compute_slope(elevation: np.ndarray, cellsize: float) -> np.ndarray:
     """Compute terrain slope in degrees.
 
