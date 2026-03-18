@@ -254,15 +254,15 @@ _ROAD_MAJOR  = frozenset({"motorway", "trunk", "primary", "secondary"})
 _ROAD_MINOR  = frozenset({"tertiary", "residential", "unclassified"})
 _WATER_FILL  = "#D4E8F0"
 _WATERWAY_COLOR = "#7BA7BC"
-_TRAIL_COLOR    = "#BBBBBB"
+_TRAIL_COLOR    = "#9B8A72"   # warm tan — reads on hillshade without competing with route
 
 
 def _road_style(value: str) -> tuple[float, str] | None:
     """Return (stroke_width_mm, stroke_color) for a road, or None to skip."""
     if value in _ROAD_MAJOR:
-        return (0.6, "#B8B8B8")
+        return (0.55, "#888888")   # medium gray, clearly legible
     if value in _ROAD_MINOR:
-        return (0.35, "#CCCCCC")
+        return (0.35, "#AAAAAA")
     return None
 
 
@@ -379,12 +379,12 @@ def _render_osm_trails(
         line = dwg.polyline(
             pts,
             stroke=_TRAIL_COLOR,
-            stroke_width=0.2,
+            stroke_width=0.28,
             fill="none",
             stroke_linecap="round",
             stroke_linejoin="round",
         )
-        line["stroke-dasharray"] = "2,1"
+        line["stroke-dasharray"] = "1.5,1"
         g_trails.add(line)
     dwg.add(g_trails)
 
@@ -1613,83 +1613,74 @@ def _draw_north_arrow(
     cy: float,
     r_mm: float,
 ) -> None:
-    """Draw a classic 8-pointed nautical compass rose as a black silhouette.
+    """Draw a clean two-tone navigator's north arrow.
 
-    The rose is centred at *(cx, cy)* with the north tip at *(cx, cy − r_mm)*.
-    Cardinal tips (N/S/E/W) are the longest points; N is slightly longer than
-    the rest to read unmistakably as the prime direction.  Intercardinal tips
-    (NE/SE/SW/NW) are shorter.  A small white hub circle marks the centre and
-    an 'N' label in a serif face floats above the north tip.
+    A slim elongated diamond: the north (upper) half is filled solid black;
+    the south (lower) half is white with a black outline.  A small 'N' label
+    sits above the north tip on a tight tracking.  The design is unambiguous
+    at small sizes and prints cleanly without weight on the hillshade.
 
     Parameters
     ----------
-    dwg:
-        svgwrite Drawing (mm user-units) — elements are added in-place.
-    cx, cy:
-        Centre of the rose in mm.
-    r_mm:
-        Distance from centre to the N tip in mm (≈ 12.7 mm for a 1 inch rose).
+    dwg : svgwrite.Drawing
+        mm user-units drawing — elements added in-place.
+    cx, cy : float
+        Centre of the arrow in mm.
+    r_mm : float
+        Distance from centre to the north tip in mm.
     """
-    import math
+    # Diamond proportions
+    tip_n  = (cx,             cy - r_mm)           # north tip
+    wing_l = (cx - r_mm * 0.22, cy)                # left wing (widest point)
+    tip_s  = (cx,             cy + r_mm * 0.82)    # south tip — slightly shorter
+    wing_r = (cx + r_mm * 0.22, cy)                # right wing
 
-    R_N  = r_mm          # N tip — longest, marks prime direction
-    R_EW = r_mm * 0.88   # E / W tips
-    R_S  = r_mm * 0.82   # S tip — slightly shorter than E/W for hierarchy
-    R_IC = r_mm * 0.50   # intercardinal (NE, SE, SW, NW) tips
-    R_in = r_mm * 0.13   # inner-notch concavity radius
-
-    def _pt(bearing_deg: float, radius: float) -> tuple[float, float]:
-        """(x, y) for a bearing measured clockwise from north."""
-        b = math.radians(bearing_deg)
-        return (cx + radius * math.sin(b), cy - radius * math.cos(b))
-
-    # 16-vertex alternating star: outer tip / inner notch / outer tip / …
-    # Bearings: 0=N, 45=NE, 90=E, 135=SE, 180=S, 225=SW, 270=W, 315=NW
-    verts: list[tuple[float, float]] = []
-    for i in range(16):
-        bearing = i * 22.5
-        if i % 2 == 1:      # odd indices → inner notch
-            r = R_in
-        elif i == 0:        # N
-            r = R_N
-        elif i == 8:        # S (bearing 180°)
-            r = R_S
-        elif i in (4, 12):  # E (90°), W (270°)
-            r = R_EW
-        else:               # intercardinals (45, 135, 225, 315)
-            r = R_IC
-        verts.append(_pt(bearing, r))
-
-    path_d = "M " + " L ".join(f"{x:.3f},{y:.3f}" for x, y in verts) + " Z"
+    # North half (solid black)
+    north_d = (
+        f"M {tip_n[0]:.3f},{tip_n[1]:.3f} "
+        f"L {wing_l[0]:.3f},{wing_l[1]:.3f} "
+        f"L {tip_s[0]:.3f},{tip_s[1]:.3f} "
+        f"L {wing_r[0]:.3f},{wing_r[1]:.3f} Z"
+    )
+    # South half (white fill, black stroke) — same 4 verts, south hemisphere
+    south_d = (
+        f"M {wing_l[0]:.3f},{wing_l[1]:.3f} "
+        f"L {tip_s[0]:.3f},{tip_s[1]:.3f} "
+        f"L {wing_r[0]:.3f},{wing_r[1]:.3f} Z"
+    )
 
     g = dwg.g(id="north-arrow")
 
-    # Main silhouette star
-    g.add(dwg.path(d=path_d, fill="#000000", stroke="none"))
-
-    # White hub — visually anchors the centre and suggests a compass pivot
-    g.add(dwg.circle(
-        center=(cx, cy), r=r_mm * 0.10,
-        fill="#FFFFFF", stroke="none",
+    # Full outline first (ensures clean join between north and south halves)
+    g.add(dwg.path(
+        d=north_d,
+        fill="#000000", stroke="#000000",
+        stroke_width=r_mm * 0.04, stroke_linejoin="round",
+    ))
+    g.add(dwg.path(
+        d=south_d,
+        fill="#FFFFFF", stroke="#000000",
+        stroke_width=r_mm * 0.04, stroke_linejoin="round",
     ))
 
-    # Small black ring around hub for refinement
-    ring = dwg.circle(
-        center=(cx, cy), r=r_mm * 0.10,
-        fill="none", stroke="#000000", stroke_width=r_mm * 0.025,
-    )
-    g.add(ring)
+    # Small pivot circle at centre
+    g.add(dwg.circle(
+        center=(cx, cy), r=r_mm * 0.08,
+        fill="#FFFFFF", stroke="#000000", stroke_width=r_mm * 0.04,
+    ))
 
-    # "N" label — bold serif, just above the north tip
-    n_y = cy - R_N - r_mm * 0.18
+    # "N" label — compact caps, just above the north tip
+    lbl_sz = r_mm * 0.55
+    n_y = tip_n[1] - lbl_sz * 0.25
     n_lbl = dwg.text(
         "N",
         insert=(cx, n_y),
         text_anchor="middle",
-        font_size=r_mm * 0.40,
+        font_size=lbl_sz,
         font_weight="bold",
-        font_family="Liberation Serif, Georgia, 'Times New Roman', serif",
+        font_family="Liberation Sans, Arial, Helvetica, sans-serif",
         fill="#000000",
+        **{"letter-spacing": "0.05em"},
     )
     n_lbl["dominant-baseline"] = "auto"
     g.add(n_lbl)
@@ -1861,6 +1852,7 @@ def render_terrain_svg(
             _hyp_size   = (max(_hxs2) - min(_hxs2), max(_hys2) - min(_hys2))
 
             _hyp_el = dwg.image(href=_href2, insert=_hyp_insert, size=_hyp_size)
+            _hyp_el["preserveAspectRatio"] = "none"
             _hyp_g = dwg.g(clip_path="url(#map-area)", opacity=0.70)
             _hyp_g.add(_hyp_el)
             dwg.add(_hyp_g)
@@ -1912,6 +1904,7 @@ def render_terrain_svg(
                 _hs_size   = (map_w_mm, map_h_mm)
 
             _img_el = dwg.image(href=_href, insert=_hs_insert, size=_hs_size)
+            _img_el["preserveAspectRatio"] = "none"
             _img_el["style"] = "mix-blend-mode:multiply;"
             _hs_g = dwg.g(clip_path="url(#map-area)", opacity=0.50)
             _hs_g.add(_img_el)
@@ -2298,15 +2291,20 @@ def render_terrain_svg(
 
     # ------------------------------------------------------------------
     # 8. Speed legend — only when speed data is available
+    # Centred on the same horizontal strip as the north arrow (step 10).
     # ------------------------------------------------------------------
+    # Pre-compute bottom-strip shared position (also used by north arrow).
+    _R_ARROW  = 7.0
+    _cy_arrow = height_mm - bottom_margin_mm + _NL_TOTAL_W + _R_ARROW * 1.8
+
     if _use_speed_color:
         _palette = get_palette(route_palette)
-        LEGEND_W, LEGEND_H = 20.0, 2.0
-        legend_x = width_mm - margin_mm - LEGEND_W
-        legend_y = height_mm - 10.5   # sits just above the bottom page edge
+        LEGEND_W, LEGEND_H = 35.0, 5.0   # wider + taller than before
+        # Right-align to the outer neatline right edge (matches scale bar)
+        legend_x = offset_x + map_w_mm + _NL_TOTAL_W - LEGEND_W
+        legend_y = _cy_arrow - LEGEND_H / 2   # vertically centred on arrow
 
         # Define a horizontal linearGradient for the legend bar.
-        # Use HSL-interpolated stops so the bar matches the route coloring.
         _LEGEND_STOPS = 21
         _grad = dwg.linearGradient(id="speed-legend-grad", x1="0%", y1="0%", x2="100%", y2="0%")
         for _li in range(_LEGEND_STOPS):
@@ -2319,12 +2317,12 @@ def render_terrain_svg(
             insert=(legend_x, legend_y),
             size=(LEGEND_W, LEGEND_H),
             fill="url(#speed-legend-grad)",
-            rx=0.5, ry=0.5,
+            rx=0.8, ry=0.8,
         ))
 
-        _lbl_y   = legend_y + LEGEND_H + 1.8
-        _lbl_sz  = 1.41    # 4pt
-        _lbl_col = "#AAAAAA"
+        _lbl_sz  = 2.82    # 8pt — doubled from 4pt
+        _lbl_col = "#888888"
+        _lbl_y   = legend_y + LEGEND_H + _lbl_sz * 0.9
         g_legend.add(dwg.text(
             "SLOW",
             insert=(legend_x, _lbl_y),
@@ -2332,7 +2330,7 @@ def render_terrain_svg(
             font_family="Liberation Sans, Arial, sans-serif",
             font_size=_lbl_sz,
             fill=_lbl_col,
-            **{"letter-spacing": "0.05em"},
+            **{"letter-spacing": "0.04em"},
         ))
         g_legend.add(dwg.text(
             "FAST",
@@ -2341,7 +2339,7 @@ def render_terrain_svg(
             font_family="Liberation Sans, Arial, sans-serif",
             font_size=_lbl_sz,
             fill=_lbl_col,
-            **{"letter-spacing": "0.05em"},
+            **{"letter-spacing": "0.04em"},
         ))
         dwg.add(g_legend)
 
@@ -2357,15 +2355,13 @@ def render_terrain_svg(
         )
 
     # ------------------------------------------------------------------
-    # 10. North arrow — classic 8-point nautical compass rose, lower-left
+    # 10. North arrow — clean two-tone navigator's needle, lower-left
+    # Left wing aligns to the outer edge of the neatline border.
+    # Vertical centre shared with speed legend (computed in step 8).
     # ------------------------------------------------------------------
-    _R_ARROW = 12.7   # 0.5 in = 1 in total diameter
-    _draw_north_arrow(
-        dwg,
-        cx=margin_mm + _R_ARROW + 3.0,
-        cy=height_mm - bottom_margin_mm + _R_ARROW + 4.0,
-        r_mm=_R_ARROW,
-    )
+    # Left wing of diamond sits at the outer neatline left edge
+    _cx_arrow = (offset_x - _NL_TOTAL_W) + _R_ARROW * 0.22
+    _draw_north_arrow(dwg, cx=_cx_arrow, cy=_cy_arrow, r_mm=_R_ARROW)
 
     # ------------------------------------------------------------------
     # 11. Scale bar — lower-right margin, right-aligned with neatline

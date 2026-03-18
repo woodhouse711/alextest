@@ -473,7 +473,7 @@ def render(
     # lake fills always appear even without a network connection.
     dem_peaks = []
     try:
-        dem_peaks = detect_peaks(elevation, projected_bounds, transformer)
+        dem_peaks = detect_peaks(elevation, projected_bounds, transformer, dem_transform=meta["transform"])
         if dem_peaks:
             click.echo(f"  Peaks:    {len(dem_peaks)} detected from DEM")
     except Exception as exc:
@@ -484,7 +484,7 @@ def render(
     if not _has_water:
         try:
             from field_atlas.enrichment.osm_vectors import OSMVectors
-            dem_lakes = detect_lakes(elevation, projected_bounds, transformer)
+            dem_lakes = detect_lakes(elevation, projected_bounds, transformer, dem_transform=meta["transform"])
             if dem_lakes:
                 click.echo(f"  Lakes:    {len(dem_lakes)} detected from DEM")
                 if osm_vectors is None:

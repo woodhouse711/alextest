@@ -21,6 +21,7 @@ def detect_peaks(
     min_prominence_m: float = 60.0,
     neighborhood_cells: int = 8,
     max_peaks: int = 10,
+    dem_transform=None,
 ) -> list:
     """Return prominent local peaks as :class:`~field_atlas.enrichment.features.MapFeature` objects.
 
@@ -65,9 +66,12 @@ def detect_peaks(
     for row, col in zip(rows, cols):
         if float(prominence[row, col]) < min_prominence_m:
             continue
-        x = bounds_projected["min_x"] + col * pw / max(M - 1, 1)
-        y = bounds_projected["max_y"] - row * ph / max(N - 1, 1)
-        lat, lng = transformer.transform(x, y, direction="INVERSE")
+        if dem_transform is not None:
+            lng, lat = dem_transform * (float(col), float(row))
+        else:
+            x = bounds_projected["min_x"] + col * pw / max(M - 1, 1)
+            y = bounds_projected["max_y"] - row * ph / max(N - 1, 1)
+            lat, lng = transformer.transform(x, y, direction="INVERSE")
         elev_m = float(elev[row, col])
         peaks.append(MapFeature(
             name=f"{int(round(elev_m))} m",
@@ -93,6 +97,7 @@ def detect_lakes(
     transformer,
     min_area_m2: float = 25_000.0,
     max_area_m2: float = 20_000_000.0,
+    dem_transform=None,
 ) -> list[list[list[float]]]:
     """Return water-body polygons detected from flat depressions in the DEM.
 
@@ -160,21 +165,35 @@ def detect_lakes(
         if float(elev[br, bc].mean()) - region_mean < 4.0:
             continue
 
-        # Convex hull polygon in projected coordinates → lat/lng
-        xs = bounds_projected["min_x"] + cols * pw / max(M - 1, 1)
-        ys = bounds_projected["max_y"] - rows * ph / max(N - 1, 1)
-        pts = np.column_stack([xs, ys])
-        if len(pts) < 4:
-            continue
-        try:
-            hull = ConvexHull(pts)
-        except Exception:
-            continue
-
-        poly: list[list[float]] = []
-        for px, py in pts[hull.vertices]:
-            lat, lng = transformer.transform(px, py, direction="INVERSE")
-            poly.append([float(lat), float(lng)])
+        # Convex hull polygon → lat/lng using DEM affine if available
+        if dem_transform is not None:
+            # Use actual DEM pixel→WGS84 transform for correct positioning
+            lngs_arr = np.array([dem_transform * (float(c), float(r)) for c, r in zip(cols, rows)])
+            hull_pts = lngs_arr  # shape (N, 2) with (lng, lat) pairs
+            if len(hull_pts) < 4:
+                continue
+            try:
+                hull = ConvexHull(hull_pts)
+            except Exception:
+                continue
+            poly: list[list[float]] = []
+            for hi in hull.vertices:
+                lng_v, lat_v = float(hull_pts[hi, 0]), float(hull_pts[hi, 1])
+                poly.append([lat_v, lng_v])
+        else:
+            xs = bounds_projected["min_x"] + cols * pw / max(M - 1, 1)
+            ys = bounds_projected["max_y"] - rows * ph / max(N - 1, 1)
+            pts = np.column_stack([xs, ys])
+            if len(pts) < 4:
+                continue
+            try:
+                hull = ConvexHull(pts)
+            except Exception:
+                continue
+            poly: list[list[float]] = []
+            for px, py in pts[hull.vertices]:
+                lat, lng = transformer.transform(px, py, direction="INVERSE")
+                poly.append([float(lat), float(lng)])
         poly.append(poly[0])  # close the ring
         water_polys.append(poly)
 
