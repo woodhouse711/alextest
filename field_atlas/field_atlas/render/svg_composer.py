@@ -1905,77 +1905,64 @@ def _draw_north_arrow(
     cy: float,
     r_mm: float,
 ) -> None:
-    """Draw a clean two-tone navigator's north arrow.
+    """Draw a geometric surveying-style north arrow.
 
-    A slim elongated diamond: the north (upper) half is filled solid black;
-    the south (lower) half is white with a black outline.  A small 'N' label
-    sits above the north tip on a tight tracking.  The design is unambiguous
-    at small sizes and prints cleanly without weight on the hillshade.
+    A tall hollow triangle (outline only, no fill) with a centre stem and
+    barb-wing extensions at the base — modelled on a classic orienteering /
+    cadastral north arrow.  All elements are pure black strokes; the design
+    reads clearly at small print sizes.
 
-    Parameters
-    ----------
-    dwg : svgwrite.Drawing
-        mm user-units drawing — elements added in-place.
-    cx, cy : float
-        Centre of the arrow in mm.
-    r_mm : float
-        Distance from centre to the north tip in mm.
+    Proportions (r_mm = distance from anchor to apex):
+      apex            cy - r_mm
+      triangle base   cy + r_mm * 0.40  (half-width ± r_mm * 0.40)
+      wing tips       half-width ± r_mm * 0.52, y = triangle-base + r_mm * 0.12
+      stem top        cy - r_mm * 0.70  (inside triangle)
+      stem bottom     cy + r_mm * 1.05  (below wing tips)
     """
-    # Diamond proportions
-    tip_n  = (cx,             cy - r_mm)           # north tip
-    wing_l = (cx - r_mm * 0.22, cy)                # left wing (widest point)
-    tip_s  = (cx,             cy + r_mm * 0.82)    # south tip — slightly shorter
-    wing_r = (cx + r_mm * 0.22, cy)                # right wing
+    h = r_mm                    # scale unit
 
-    # North half (solid black)
-    north_d = (
-        f"M {tip_n[0]:.3f},{tip_n[1]:.3f} "
-        f"L {wing_l[0]:.3f},{wing_l[1]:.3f} "
-        f"L {tip_s[0]:.3f},{tip_s[1]:.3f} "
-        f"L {wing_r[0]:.3f},{wing_r[1]:.3f} Z"
-    )
-    # South half (white fill, black stroke) — same 4 verts, south hemisphere
-    south_d = (
-        f"M {wing_l[0]:.3f},{wing_l[1]:.3f} "
-        f"L {tip_s[0]:.3f},{tip_s[1]:.3f} "
-        f"L {wing_r[0]:.3f},{wing_r[1]:.3f} Z"
-    )
+    # Proportions measured from the reference image:
+    #   triangle base at ~60 % of total height from apex (tall, narrow triangle)
+    #   wing tips at ~70 % from apex, slightly wider than triangle corners
+    #   stem exits triangle top at ~14 %, exits bottom at ~93 %
+    # Total arrow height ≈ 1.9 × r_mm (apex at top, stem tip at bottom)
+    apex_y     = cy - h            # north tip
+    tri_base_y = cy + h * 0.20    # triangle sides end here (tall triangle)
+    wing_y     = tri_base_y + h * 0.22   # wings flare slightly below corners
+    stem_top_y = cy - h * 0.72    # stem starts inside triangle (below apex)
+    stem_bot_y = cy + h * 0.88    # stem ends below wing tips
+
+    tri_hw  = h * 0.46   # half-width at triangle base (apex angle ≈ 40°)
+    wing_hw = h * 0.58   # wing tips just wider than triangle corners
+
+    sw = h * 0.13   # stroke weight ≈ 7 % of total arrow height
 
     g = dwg.g(id="north-arrow")
 
-    # Full outline first (ensures clean join between north and south halves)
+    # Left outer path: apex → tri-base-left → wing-tip-left → stem-bottom
     g.add(dwg.path(
-        d=north_d,
-        fill="#000000", stroke="#000000",
-        stroke_width=r_mm * 0.04, stroke_linejoin="round",
+        d=(f"M {cx:.3f},{apex_y:.3f} "
+           f"L {cx - tri_hw:.3f},{tri_base_y:.3f} "
+           f"L {cx - wing_hw:.3f},{wing_y:.3f} "
+           f"L {cx:.3f},{stem_bot_y:.3f}"),
+        fill="none", stroke="#000000",
+        stroke_width=sw, stroke_linejoin="miter", stroke_linecap="square",
     ))
+    # Right outer path: apex → tri-base-right → wing-tip-right → stem-bottom
     g.add(dwg.path(
-        d=south_d,
-        fill="#FFFFFF", stroke="#000000",
-        stroke_width=r_mm * 0.04, stroke_linejoin="round",
+        d=(f"M {cx:.3f},{apex_y:.3f} "
+           f"L {cx + tri_hw:.3f},{tri_base_y:.3f} "
+           f"L {cx + wing_hw:.3f},{wing_y:.3f} "
+           f"L {cx:.3f},{stem_bot_y:.3f}"),
+        fill="none", stroke="#000000",
+        stroke_width=sw, stroke_linejoin="miter", stroke_linecap="square",
     ))
-
-    # Small pivot circle at centre
-    g.add(dwg.circle(
-        center=(cx, cy), r=r_mm * 0.08,
-        fill="#FFFFFF", stroke="#000000", stroke_width=r_mm * 0.04,
+    # Centre stem — vertical staff bisecting the whole form
+    g.add(dwg.line(
+        start=(cx, stem_top_y), end=(cx, stem_bot_y),
+        stroke="#000000", stroke_width=sw,
+        stroke_linecap="square",
     ))
-
-    # "N" label — compact caps, just above the north tip
-    lbl_sz = r_mm * 0.55
-    n_y = tip_n[1] - lbl_sz * 0.25
-    n_lbl = dwg.text(
-        "N",
-        insert=(cx, n_y),
-        text_anchor="middle",
-        font_size=lbl_sz,
-        font_weight="bold",
-        font_family="Liberation Sans, Arial, Helvetica, sans-serif",
-        fill="#000000",
-        **{"letter-spacing": "0.05em"},
-    )
-    n_lbl["dominant-baseline"] = "auto"
-    g.add(n_lbl)
 
     dwg.add(g)
 
@@ -2684,8 +2671,8 @@ def render_terrain_svg(
     # Left wing aligns to the outer edge of the neatline border.
     # Vertical centre shared with speed legend (computed in step 8).
     # ------------------------------------------------------------------
-    # Left wing of diamond sits at the outer neatline left edge
-    _cx_arrow = (offset_x - _NL_TOTAL_W) + _R_ARROW * 0.22
+    # Left wing tip sits at the outer neatline left edge
+    _cx_arrow = (offset_x - _NL_TOTAL_W) + _R_ARROW * 0.62
     _draw_north_arrow(dwg, cx=_cx_arrow, cy=_cy_arrow, r_mm=_R_ARROW)
 
     # ------------------------------------------------------------------
