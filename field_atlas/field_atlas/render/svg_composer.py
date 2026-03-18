@@ -40,9 +40,9 @@ _WATER_TYPES  = frozenset({"water", "pond", "reservoir"})
 # minor = every      interval (e.g.  10 m at 10 m interval)
 # Colors are pure grayscale percentages; no RGB variation.
 _CONTOUR_TIERS: dict[str, tuple[str, float]] = {
-    "major": ("#1E1A14", 0.56),   # warm near-black — heavy/primary
-    "index": ("#4A4238", 0.36),   # warm dark brown — medium
-    "minor": ("#807060", 0.18),   # warm gray — light
+    "major": ("#1A0F06", 0.60),   # deep warm brown — heavy/primary (wider too)
+    "index": ("#5C3A1E", 0.40),   # medium warm sienna — clearly distinct from minor
+    "minor": ("#8C7058", 0.20),   # warm tan — light
 }
 
 # Index contour label style
@@ -2145,7 +2145,7 @@ def render_terrain_svg(
 
             _hyp_el = dwg.image(href=_href2, insert=_hyp_insert, size=_hyp_size)
             _hyp_el["preserveAspectRatio"] = "none"
-            _hyp_g = dwg.g(clip_path="url(#map-area)", opacity=0.70)
+            _hyp_g = dwg.g(clip_path="url(#map-area)", opacity=0.55)
             _hyp_g.add(_hyp_el)
             dwg.add(_hyp_g)
         except Exception:
@@ -2197,8 +2197,8 @@ def render_terrain_svg(
 
             _img_el = dwg.image(href=_href, insert=_hs_insert, size=_hs_size)
             _img_el["preserveAspectRatio"] = "none"
-            _img_el["style"] = "mix-blend-mode:multiply;"
-            _hs_g = dwg.g(clip_path="url(#map-area)", opacity=0.50)
+            _img_el["style"] = "mix-blend-mode:multiply;image-rendering:smooth;"
+            _hs_g = dwg.g(clip_path="url(#map-area)", opacity=0.30)
             _hs_g.add(_img_el)
             dwg.add(_hs_g)
         except Exception as _hs_err:
@@ -2771,7 +2771,8 @@ def add_title_block(
     RULE_HALF_W = 80.0          # rule extends ±80 mm from centre (160 mm total)
     RULE_SW     = 0.50          # ≈ 1.4 pt stroke-width in mm
     FONT        = "Liberation Sans, Arial, Helvetica, sans-serif"
-    FONT_SERIF  = "Liberation Serif, DejaVu Serif, Georgia, 'Times New Roman', serif"
+    FONT_TITLE  = "Cinzel, 'Trajan Pro', Palatino, 'Times New Roman', serif"
+    FONT_DATE   = "'Cormorant Garamond', 'Cormorant Garamond Light', Garamond, Palatino, serif"
     FONT_MONO   = "Liberation Mono, DejaVu Sans Mono, 'Courier New', Courier, monospace"
 
     cx           = width_mm / 2.0                  # horizontal centre of canvas
@@ -2806,8 +2807,8 @@ def add_title_block(
     else:
         location = track_name.upper()
     r1 = svg_drawing.text(location, insert=(cx, r1_y), font_size=R1_MM,
-                          font_family=FONT_SERIF, fill=MAIN_COLOR, text_anchor="middle")
-    r1["letter-spacing"] = f"{0.12 * R1_MM:.3f}"
+                          font_family=FONT_TITLE, fill=MAIN_COLOR, text_anchor="middle")
+    r1["letter-spacing"] = f"{0.18 * R1_MM:.3f}"
     svg_drawing.add(r1)
 
     # ---- Row 2: Date, long-form human format ----------------------------
@@ -2816,10 +2817,12 @@ def add_title_block(
         fmt_date = f"{dt.strftime('%B')} {dt.day}, {dt.year}"
     except ValueError:
         fmt_date = date
-    svg_drawing.add(svg_drawing.text(
+    r2 = svg_drawing.text(
         fmt_date, insert=(cx, r2_y), font_size=R2_MM,
-        font_family=FONT_SERIF, fill=SOFT_COLOR, text_anchor="middle",
-    ))
+        font_family=FONT_DATE, fill=SOFT_COLOR, text_anchor="middle",
+    )
+    r2["font-style"] = "italic"
+    svg_drawing.add(r2)
 
     # ---- Row 3: Hairline rule -------------------------------------------
     svg_drawing.add(svg_drawing.line(
