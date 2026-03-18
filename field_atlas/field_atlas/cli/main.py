@@ -1,4 +1,4 @@
-"""main.py — Field Atlas command-line interface.
+"""main.py — Fieldnotes command-line interface.
 
 Entry-point that wires together the full GPX → DEM → enrichment → SVG pipeline.
 Accepts a GPX file and produces a print-ready terrain map SVG.
@@ -130,7 +130,7 @@ def _run_enrichment(
 
 @click.group()
 def cli() -> None:
-    """Field Atlas — print-quality terrain map generator."""
+    """Fieldnotes — print-quality terrain map generator."""
 
 
 @cli.command()
@@ -566,7 +566,7 @@ def render(
     n_levels = len(contours)
 
     click.echo("")
-    click.echo("✓ Field Atlas — Terrain Composition")
+    click.echo("✓ Fieldnotes — Terrain Composition")
     click.echo(f"  Track:    {track.name}")
     click.echo(f"  Date:     {display_date}")
     click.echo(

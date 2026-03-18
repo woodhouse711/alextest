@@ -2402,7 +2402,7 @@ def add_title_block(
       3  Hairline rule, 40 mm wide, centred, #CCCCCC, 0.3 pt
       4  Stats: distance · gain · duration · coordinates          7 pt
       5  Weather + solar summary  (omitted when no enrichment)   6.5 pt
-      6  "FIELD ATLAS" wordmark, right-aligned                    5 pt
+      6  "FIELDNOTES" wordmark, right-aligned                     5 pt
 
     Parameters
     ----------
@@ -2530,10 +2530,10 @@ def add_title_block(
             text_anchor="middle",
         ))
 
-    # ---- Row 6: "FIELD ATLAS" wordmark, right-aligned ------------------
+    # ---- Row 6: "FIELDNOTES" wordmark, right-aligned -------------------
     rx = width_mm - margin_mm   # right edge of the printable area
     r6 = svg_drawing.text(
-        "FIELD ATLAS",
+        "FIELDNOTES",
         insert=(rx, r6_y),
         font_size=R6_MM,
         font_family=FONT,
