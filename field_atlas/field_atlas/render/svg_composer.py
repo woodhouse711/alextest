@@ -23,11 +23,11 @@ if TYPE_CHECKING:
 # Feature label style constants
 # ---------------------------------------------------------------------------
 
-_PEAK_COLOR      = "#3A3A3A"
-_WATER_COLOR     = "#7BA7BC"
+_PEAK_COLOR      = "#2A2218"
+_WATER_COLOR     = "#6A97B0"
 _WATER_FILL      = "#A8C8CC"   # muted teal fill for lake polygons
 _WATER_STROKE    = "#6E9EA6"   # slightly darker teal outline
-_OTHER_COLOR     = "#888888"
+_OTHER_COLOR     = "#7A6E64"
 _FONT_MM_STD  = 2.12     # ≈ 6pt
 _FONT_MM_SML  = 1.76     # ≈ 5pt
 _CHAR_W_FACTOR = 0.58    # estimated rendered char width / font_size
@@ -40,9 +40,9 @@ _WATER_TYPES  = frozenset({"water", "pond", "reservoir"})
 # minor = every      interval (e.g.  10 m at 10 m interval)
 # Colors are pure grayscale percentages; no RGB variation.
 _CONTOUR_TIERS: dict[str, tuple[str, float]] = {
-    "major": ("#2A2A2A", 0.56),   # near-black — heavy/primary
-    "index": ("#555555", 0.36),   # dark gray — medium
-    "minor": ("#888888", 0.18),   # mid gray — light
+    "major": ("#1E1A14", 0.56),   # warm near-black — heavy/primary
+    "index": ("#4A4238", 0.36),   # warm dark brown — medium
+    "minor": ("#807060", 0.18),   # warm gray — light
 }
 
 # Index contour label style
@@ -53,20 +53,20 @@ _CONTOUR_LABEL_CHAR_W  = _CONTOUR_LABEL_FONT_MM * 0.58
 # Graticule and neatline constants
 # ---------------------------------------------------------------------------
 
-_GRAT_STROKE        = "#555555"   # 33% black — solid hairline
+_GRAT_STROKE        = "#6A5E54"   # warm brown-gray — solid hairline
 _GRAT_STROKE_W      = 0.10        # mm
 _GRAT_LABEL_FONT    = 2.12        # 6pt (+2pt from original 4pt)
-_GRAT_LABEL_COLOR   = "#555555"   # 33% black — matches grid lines
+_GRAT_LABEL_COLOR   = "#6A5E54"   # warm — matches grid lines
 _GRAT_LABEL_FONT_F  = "Liberation Sans, Arial, Helvetica, sans-serif"
 _GRAT_LABEL_GAP     = 1.0         # mm between label and outer border edge
 _GRAT_N_SAMPLE      = 32          # intermediate points when projecting a grid line
 
 _NL_TOTAL_W   = 5.0        # mm — total neatline border width
 _NL_BAND_W    = 2.5        # mm — each of the two bands
-_NL_BLACK     = "#333333"
+_NL_BLACK     = "#1C1813"
 _NL_WHITE     = "#FFFFFF"
 _NL_STROKE    = 0.15       # mm — hairline outlines on inner/outer edges
-_NL_BAND_OPY  = 0.25       # opacity applied to checker bands and corners (25 % halftone)
+_NL_BAND_OPY  = 0.62       # opacity applied to checker bands and corners
 
 
 def _feature_style(ftype: str) -> dict:
@@ -252,8 +252,8 @@ def _render_feature_labels(
 
 _ROAD_MAJOR  = frozenset({"motorway", "trunk", "primary", "secondary"})
 _ROAD_MINOR  = frozenset({"tertiary", "residential", "unclassified"})
-_WATER_FILL  = "#D4E8F0"
-_WATERWAY_COLOR = "#7BA7BC"
+_WATER_FILL  = "#BDD5E3"
+_WATERWAY_COLOR = "#6A97B0"
 _TRAIL_COLOR    = "#9B8A72"   # warm tan — reads on hillshade without competing with route
 
 # ---------------------------------------------------------------------------
@@ -2100,13 +2100,13 @@ def render_terrain_svg(
     # 3. White background
     # ------------------------------------------------------------------
     dwg.add(dwg.rect(
-        insert=(0, 0), size=(width_mm, height_mm), fill="white", stroke="none",
+        insert=(0, 0), size=(width_mm, height_mm), fill="#FBF7F0", stroke="none",
     ))
 
-    # Cream underlay — map area only, below hillshade and all vector layers.
+    # Parchment underlay — map area only, below hillshade and all vector layers.
     dwg.add(dwg.rect(
         insert=(offset_x, offset_y), size=(map_w_mm, map_h_mm),
-        fill="#FAEEC6", stroke="none", opacity=0.25,
+        fill="#EDE3B8", stroke="none", opacity=0.50,
     ))
 
     # Define a clip path that constrains all map content to the map rectangle.
@@ -2765,12 +2765,14 @@ def add_title_block(
     R5_MM =  6.87   # 19.5 pt — weather / solar
     R6_MM =  5.28   # 15 pt — wordmark
 
-    MAIN_COLOR  = "#3A3A3A"
-    SOFT_COLOR  = "#666666"
-    RULE_COLOR  = "#CCCCCC"
-    RULE_HALF_W = 60.0          # rule extends ±60 mm from centre (120 mm total)
-    RULE_SW     = 0.318         # ≈ 0.9 pt stroke-width in mm
+    MAIN_COLOR  = "#1C1813"
+    SOFT_COLOR  = "#5A4E42"
+    RULE_COLOR  = "#C0A888"
+    RULE_HALF_W = 80.0          # rule extends ±80 mm from centre (160 mm total)
+    RULE_SW     = 0.50          # ≈ 1.4 pt stroke-width in mm
     FONT        = "Liberation Sans, Arial, Helvetica, sans-serif"
+    FONT_SERIF  = "Liberation Serif, DejaVu Serif, Georgia, 'Times New Roman', serif"
+    FONT_MONO   = "Liberation Mono, DejaVu Sans Mono, 'Courier New', Courier, monospace"
 
     cx           = width_mm / 2.0                  # horizontal centre of canvas
     margin_top_y = height_mm - bottom_margin_mm    # top edge of title block strip
@@ -2803,8 +2805,9 @@ def add_title_block(
         location = enrichment.location_name.upper()
     else:
         location = track_name.upper()
-    r1 = svg_drawing.text(location, insert=(cx, r1_y), font_size=R1_MM, **base)
-    r1["letter-spacing"] = f"{0.08 * R1_MM:.3f}"
+    r1 = svg_drawing.text(location, insert=(cx, r1_y), font_size=R1_MM,
+                          font_family=FONT_SERIF, fill=MAIN_COLOR, text_anchor="middle")
+    r1["letter-spacing"] = f"{0.12 * R1_MM:.3f}"
     svg_drawing.add(r1)
 
     # ---- Row 2: Date, long-form human format ----------------------------
@@ -2814,7 +2817,8 @@ def add_title_block(
     except ValueError:
         fmt_date = date
     svg_drawing.add(svg_drawing.text(
-        fmt_date, insert=(cx, r2_y), font_size=R2_MM, **base,
+        fmt_date, insert=(cx, r2_y), font_size=R2_MM,
+        font_family=FONT_SERIF, fill=SOFT_COLOR, text_anchor="middle",
     ))
 
     # ---- Row 3: Hairline rule -------------------------------------------
@@ -2836,7 +2840,8 @@ def add_title_block(
     lng_str = f"{abs(centroid_lng):.2f}°{'E' if centroid_lng >= 0 else 'W'}"
     parts4.append(f"{lat_str}  {lng_str}")
     svg_drawing.add(svg_drawing.text(
-        "  ·  ".join(parts4), insert=(cx, r4_y), font_size=R4_MM, **base,
+        "  ·  ".join(parts4), insert=(cx, r4_y), font_size=R4_MM,
+        font_family=FONT_MONO, fill=SOFT_COLOR, text_anchor="middle",
     ))
 
     # ---- Row 5: Weather + solar (only when enrichment available) --------
@@ -2863,9 +2868,9 @@ def add_title_block(
         "FIELDNOTES",
         insert=(rx, r4_y),
         font_size=R6_MM,
-        font_family=FONT,
-        fill=MAIN_COLOR,
+        font_family=FONT_MONO,
+        fill=SOFT_COLOR,
         text_anchor="end",
     )
-    r6["letter-spacing"] = f"{0.12 * R6_MM:.3f}"
+    r6["letter-spacing"] = f"{0.18 * R6_MM:.3f}"
     svg_drawing.add(r6)
