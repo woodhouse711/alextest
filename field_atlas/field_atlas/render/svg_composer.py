@@ -2294,8 +2294,10 @@ def render_terrain_svg(
     # Centred on the same horizontal strip as the north arrow (step 10).
     # ------------------------------------------------------------------
     # Pre-compute bottom-strip shared position (also used by north arrow).
-    _R_ARROW  = 7.0
-    _cy_arrow = height_mm - bottom_margin_mm + _NL_TOTAL_W + _R_ARROW * 1.8
+    # 4 mm clearance gap below the outer neatline border edge.
+    _R_ARROW      = 7.0
+    _BELOW_BORDER = _NL_TOTAL_W + 4.0   # mm below map bottom → top of below-border strip
+    _cy_arrow     = height_mm - bottom_margin_mm + _BELOW_BORDER + _R_ARROW
 
     if _use_speed_color:
         _palette = get_palette(route_palette)
@@ -2373,7 +2375,7 @@ def render_terrain_svg(
         dwg,
         scale_mm_per_m=scale,
         right_edge_x=offset_x + map_w_mm + _NL_TOTAL_W,
-        bar_top_y=height_mm - bottom_margin_mm + 5.0,
+        bar_top_y=height_mm - bottom_margin_mm + _BELOW_BORDER,
     )
 
     dwg.save()
@@ -2530,11 +2532,13 @@ def add_title_block(
             text_anchor="middle",
         ))
 
-    # ---- Row 6: "FIELDNOTES" wordmark, right-aligned -------------------
-    rx = width_mm - margin_mm   # right edge of the printable area
+    # ---- Row 6: "FIELDNOTES" wordmark — right-aligned to outer neatline edge,
+    # vertically pinned to the stats row so it reads as a colophon in-line
+    # with the route data rather than a floating footer.
+    rx = width_mm - margin_mm + _NL_TOTAL_W   # outer right edge of neatline border
     r6 = svg_drawing.text(
         "FIELDNOTES",
-        insert=(rx, r6_y),
+        insert=(rx, r4_y),
         font_size=R6_MM,
         font_family=FONT,
         fill=MAIN_COLOR,
