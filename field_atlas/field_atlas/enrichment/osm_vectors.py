@@ -1,18 +1,15 @@
 """
 field_atlas/enrichment/osm_vectors.py
 
-Fetch road, waterway, water-area, and trail vector geometry from OpenStreetMap
-via the Overpass API.  Returns structured geometry used by the SVG renderer to
-draw geographic context layers (below contours) and a trail network layer
-(above contours, below the user's route).
+Fetch road, waterway, water-area, trail, terrain-area, and protected-area
+vector geometry from OpenStreetMap via the Overpass API.  Returns structured
+geometry used by the SVG renderer to draw geographic context layers.
 
 API:  https://overpass-api.de/api/interpreter
 No key required; public instance — be respectful of rate limits.
 
-Note: uses "out body geom" which returns full geometry for each way, unlike
-the feature query in features.py which uses "out center tags" (centre-point
-only).  Full geometry is required here because we render actual line/polygon
-shapes, not just placement markers.
+Note: uses "out body geom" which returns full geometry for each way/relation,
+including member way geometry for relations.
 """
 
 from __future__ import annotations
@@ -29,23 +26,48 @@ import requests
 # ---------------------------------------------------------------------------
 
 _OVERPASS_URL = "https://overpass-api.de/api/interpreter"
-_REQUEST_TIMEOUT_S = 45
+_REQUEST_TIMEOUT_S = 60
 
 # Overpass QL — {{bbox}} is replaced with south,west,north,east.
 _QUERY_TEMPLATE = """\
-[out:json][timeout:45];
+[out:json][timeout:60];
 (
   way["highway"~"motorway|trunk|primary|secondary|tertiary|residential|unclassified"]({{bbox}});
   way["waterway"~"river|stream|canal"]({{bbox}});
   way["natural"="water"]({{bbox}});
   relation["natural"="water"]({{bbox}});
   way["highway"~"path|track|footway|bridleway"]({{bbox}});
+  way["landuse"~"forest|meadow|farmland"]({{bbox}});
+  relation["landuse"~"forest|meadow|farmland"]({{bbox}});
+  way["natural"~"wood|scrub|heath|grassland|glacier|sand|scree|wetland"]({{bbox}});
+  relation["natural"~"wood|scrub|heath|grassland|glacier|sand|scree|wetland"]({{bbox}});
+  relation["boundary"~"national_park|protected_area"]({{bbox}});
+  relation["leisure"="nature_reserve"]({{bbox}});
 );
 out body geom;"""
 
-_ROAD_VALUES   = frozenset("motorway|trunk|primary|secondary|tertiary|residential|unclassified".split("|"))
+_ROAD_VALUES    = frozenset("motorway|trunk|primary|secondary|tertiary|residential|unclassified".split("|"))
 _WATERWAY_VALUES = frozenset("river|stream|canal".split("|"))
-_TRAIL_VALUES  = frozenset("path|track|footway|bridleway".split("|"))
+_TRAIL_VALUES   = frozenset("path|track|footway|bridleway".split("|"))
+
+# natural= values that map to terrain types
+_TERRAIN_NATURAL: dict[str, str] = {
+    "wood":      "forest",
+    "scrub":     "scrub",
+    "heath":     "heath",
+    "grassland": "grassland",
+    "glacier":   "glacier",
+    "sand":      "sand",
+    "scree":     "scree",
+    "wetland":   "wetland",
+}
+
+# landuse= values that map to terrain types
+_TERRAIN_LANDUSE: dict[str, str] = {
+    "forest":   "forest",
+    "meadow":   "grassland",
+    "farmland": "grassland",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -65,6 +87,23 @@ class OSMWay:
 
 
 @dataclass
+class OSMTerrainArea:
+    """A terrain-typed area polygon from OSM landuse/natural tags."""
+
+    terrain_type: str              # e.g. "forest", "scrub", "glacier"
+    geometry: list[list[float]]    # [[lat, lng], …] closed ring
+
+
+@dataclass
+class OSMProtectedArea:
+    """A protected-area boundary from OSM boundary/leisure tags."""
+
+    name: str | None
+    boundary_type: str             # "national_park", "wilderness", "protected_area", "nature_reserve"
+    rings: list[list[list[float]]] # outer rings — each is [[lat, lng], …]
+
+
+@dataclass
 class OSMVectors:
     """All vector layers for a single bounding box query."""
 
@@ -73,6 +112,8 @@ class OSMVectors:
     water_areas: list[list[list[float]]]    # list of closed-ring polygons [[lat,lng],…]
     trails: list[OSMWay]
     buildings_area: list[list[list[float]]] = field(default_factory=list)
+    terrain_areas: list[OSMTerrainArea]     = field(default_factory=list)
+    protected_areas: list[OSMProtectedArea] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -81,10 +122,7 @@ class OSMVectors:
 
 
 def _build_query(bounds: dict) -> str:
-    """Substitute bounding box into the Overpass QL template.
-
-    Overpass uses south,west,north,east order.
-    """
+    """Substitute bounding box into the Overpass QL template."""
     bbox = (
         f"{bounds['min_lat']},{bounds['min_lng']},"
         f"{bounds['max_lat']},{bounds['max_lng']}"
@@ -108,19 +146,63 @@ def _is_closed(geom: list[list[float]]) -> bool:
     return geom[0][0] == geom[-1][0] and geom[0][1] == geom[-1][1]
 
 
+def _terrain_type_from_tags(tags: dict) -> str | None:
+    """Return a canonical terrain type string from OSM tags, or None."""
+    natural = tags.get("natural")
+    if natural and natural in _TERRAIN_NATURAL:
+        return _TERRAIN_NATURAL[natural]
+    landuse = tags.get("landuse")
+    if landuse and landuse in _TERRAIN_LANDUSE:
+        return _TERRAIN_LANDUSE[landuse]
+    return None
+
+
+def _boundary_type_from_tags(tags: dict) -> str | None:
+    """Return a canonical boundary type from OSM tags, or None if not a boundary."""
+    boundary = tags.get("boundary")
+    if boundary == "national_park":
+        return "national_park"
+    if boundary == "protected_area":
+        protect_class = tags.get("protect_class", "")
+        if protect_class in ("1", "1a", "1b", "2"):
+            return "wilderness"
+        return "protected_area"
+    if tags.get("leisure") == "nature_reserve":
+        return "nature_reserve"
+    return None
+
+
+def _extract_relation_outer_rings(el: dict) -> list[list[list[float]]]:
+    """Extract outer-role member way geometries from a relation element."""
+    rings: list[list[list[float]]] = []
+    for member in el.get("members", []):
+        if member.get("type") != "way":
+            continue
+        if member.get("role") not in ("outer", ""):
+            continue
+        geom = [
+            [float(n["lat"]), float(n["lon"])]
+            for n in member.get("geometry", [])
+            if "lat" in n and "lon" in n
+        ]
+        if geom:
+            rings.append(geom)
+    return rings
+
+
 # ---------------------------------------------------------------------------
 # Public API — fetch
 # ---------------------------------------------------------------------------
 
 
 def fetch_osm_vectors(bounds: dict) -> OSMVectors:
-    """Fetch road, waterway, water-area, and trail vectors from Overpass.
+    """Fetch all vector layers from Overpass for the given bounding box.
 
     Parameters
     ----------
     bounds:
         Dict with ``min_lat``, ``max_lat``, ``min_lng``, ``max_lng``
-        in decimal degrees (WGS-84).  Typically the padded route bounding box.
+        in decimal degrees (WGS-84).
 
     Returns
     -------
@@ -164,19 +246,20 @@ def fetch_osm_vectors(bounds: dict) -> OSMVectors:
     waterways: list[OSMWay] = []
     water_areas: list[list[list[float]]] = []
     trails: list[OSMWay] = []
+    terrain_areas: list[OSMTerrainArea] = []
+    protected_areas: list[OSMProtectedArea] = []
 
     for el in payload["elements"]:
         el_type = el.get("type")
         if el_type not in ("way", "relation"):
             continue
 
-        tags     = el.get("tags", {})
-        natural  = tags.get("natural")
+        tags    = el.get("tags", {})
+        natural = tags.get("natural")
+        landuse = tags.get("landuse")
 
-        # Relations (multipolygons) don't carry a top-level geometry array —
-        # geometry lives inside each member way.  Handle water relations first
-        # so large lakes stored as multipolygons are captured.
         if el_type == "relation":
+            # ---- Water relations (multipolygon lakes) --------------------
             if natural == "water":
                 for member in el.get("members", []):
                     if member.get("role") in ("outer", "") and member.get("type") == "way":
@@ -187,14 +270,43 @@ def fetch_osm_vectors(bounds: dict) -> OSMVectors:
                         ]
                         if mgeom and _is_closed(mgeom):
                             water_areas.append(mgeom)
-            continue  # relations only used for water; skip other tags
+                continue
 
+            # ---- Protected area boundaries ------------------------------
+            btype = _boundary_type_from_tags(tags)
+            if btype is not None:
+                rings = _extract_relation_outer_rings(el)
+                if rings:
+                    name = tags.get("name") or tags.get("name:en") or None
+                    protected_areas.append(OSMProtectedArea(
+                        name=name,
+                        boundary_type=btype,
+                        rings=rings,
+                    ))
+                continue
+
+            # ---- Terrain area relations (multipolygon forest/scrub/etc.) -
+            ttype = _terrain_type_from_tags(tags)
+            if ttype is not None:
+                for member in el.get("members", []):
+                    if member.get("type") != "way" or member.get("role") not in ("outer", ""):
+                        continue
+                    mgeom = [
+                        [float(n["lat"]), float(n["lon"])]
+                        for n in member.get("geometry", [])
+                        if "lat" in n and "lon" in n
+                    ]
+                    if mgeom and _is_closed(mgeom):
+                        terrain_areas.append(OSMTerrainArea(terrain_type=ttype, geometry=mgeom))
+            continue
+
+        # ---- Ways --------------------------------------------------------
         geom = _extract_geometry(el)
         if not geom:
             continue
 
-        osm_id  = int(el.get("id", 0))
-        name    = tags.get("name") or tags.get("name:en") or None
+        osm_id   = int(el.get("id", 0))
+        name     = tags.get("name") or tags.get("name:en") or None
         highway  = tags.get("highway")
         waterway = tags.get("waterway")
 
@@ -207,8 +319,20 @@ def fetch_osm_vectors(bounds: dict) -> OSMVectors:
             trails.append(OSMWay(id=osm_id, name=name, tag="highway", value=highway, geometry=geom))
         elif waterway in _WATERWAY_VALUES:
             waterways.append(OSMWay(id=osm_id, name=name, tag="waterway", value=waterway, geometry=geom))
+        else:
+            # Terrain area ways
+            ttype = _terrain_type_from_tags(tags)
+            if ttype is not None and _is_closed(geom):
+                terrain_areas.append(OSMTerrainArea(terrain_type=ttype, geometry=geom))
 
-    return OSMVectors(roads=roads, waterways=waterways, water_areas=water_areas, trails=trails)
+    return OSMVectors(
+        roads=roads,
+        waterways=waterways,
+        water_areas=water_areas,
+        trails=trails,
+        terrain_areas=terrain_areas,
+        protected_areas=protected_areas,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -217,19 +341,17 @@ def fetch_osm_vectors(bounds: dict) -> OSMVectors:
 
 
 def save_osm_vectors_to_file(vectors: OSMVectors, filepath: str | Path) -> None:
-    """Serialise *vectors* to a JSON file at *filepath*.
-
-    Parent directories are created automatically.  Overwrites any existing
-    file at that path.
-    """
+    """Serialise *vectors* to a JSON file at *filepath*."""
     path = Path(filepath)
     path.parent.mkdir(parents=True, exist_ok=True)
     data = {
-        "roads":          [asdict(w) for w in vectors.roads],
-        "waterways":      [asdict(w) for w in vectors.waterways],
-        "water_areas":    vectors.water_areas,
-        "trails":         [asdict(w) for w in vectors.trails],
-        "buildings_area": vectors.buildings_area,
+        "roads":           [asdict(w) for w in vectors.roads],
+        "waterways":       [asdict(w) for w in vectors.waterways],
+        "water_areas":     vectors.water_areas,
+        "trails":          [asdict(w) for w in vectors.trails],
+        "buildings_area":  vectors.buildings_area,
+        "terrain_areas":   [asdict(a) for a in vectors.terrain_areas],
+        "protected_areas": [asdict(p) for p in vectors.protected_areas],
     }
     with path.open("w", encoding="utf-8") as fh:
         json.dump(data, fh, indent=2)
@@ -238,13 +360,6 @@ def save_osm_vectors_to_file(vectors: OSMVectors, filepath: str | Path) -> None:
 def load_osm_vectors_from_file(filepath: str | Path) -> OSMVectors:
     """Deserialise an :class:`OSMVectors` previously written by
     :func:`save_osm_vectors_to_file`.
-
-    Raises
-    ------
-    FileNotFoundError
-        If *filepath* does not exist.
-    ValueError
-        If the JSON cannot be decoded into an OSMVectors.
     """
     path = Path(filepath)
     with path.open(encoding="utf-8") as fh:
@@ -256,6 +371,10 @@ def load_osm_vectors_from_file(filepath: str | Path) -> OSMVectors:
             water_areas=    data.get("water_areas", []),
             trails=         [OSMWay(**w) for w in data.get("trails", [])],
             buildings_area= data.get("buildings_area", []),
+            terrain_areas=  [OSMTerrainArea(**a) for a in data.get("terrain_areas", [])],
+            protected_areas=[
+                OSMProtectedArea(**p) for p in data.get("protected_areas", [])
+            ],
         )
     except (TypeError, KeyError) as exc:
         raise ValueError(

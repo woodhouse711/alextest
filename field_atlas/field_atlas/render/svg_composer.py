@@ -256,6 +256,35 @@ _WATER_FILL  = "#D4E8F0"
 _WATERWAY_COLOR = "#7BA7BC"
 _TRAIL_COLOR    = "#9B8A72"   # warm tan — reads on hillshade without competing with route
 
+# ---------------------------------------------------------------------------
+# Terrain hatch pattern styles
+# Each entry: (pattern_id, spacing_mm, line_angle_deg, color, stroke_width_mm,
+#              second_angle_deg_or_None)  ← second angle gives cross-hatch
+# ---------------------------------------------------------------------------
+_TERRAIN_PATTERNS: dict[str, tuple] = {
+    # terrain_type: (pat_id, spacing, angle, color, sw, second_angle)
+    "forest":    ("tp-forest",    2.5,  45, "#3E6633", 0.14, None),
+    "wood":      ("tp-forest",    2.5,  45, "#3E6633", 0.14, None),
+    "scrub":     ("tp-scrub",     4.0, 135, "#7A7A3A", 0.11, None),
+    "heath":     ("tp-heath",     3.0,  45, "#7A5A3A", 0.10,  135),
+    "grassland": ("tp-grassland", 3.5,   0, "#5A8A3A", 0.09, None),
+    "glacier":   ("tp-glacier",   2.0,   0, "#7AB0E0", 0.14, None),
+    "sand":      ("tp-sand",      5.0,  45, "#C8A86A", 0.09,  135),
+    "scree":     ("tp-scree",     4.5,  45, "#9A8A7A", 0.10,  135),
+    "wetland":   ("tp-wetland",   3.0,   0, "#6A9A9A", 0.11, None),
+}
+_TERRAIN_FILL_OPACITY = 0.30
+
+# Protected area boundary styles: (dash_pattern, color, label_color)
+_BOUNDARY_STYLES: dict[str, tuple] = {
+    "national_park":  ("4,2",    "#2E6E2E", "#2E6E2E"),
+    "wilderness":     ("6,2,1,2","#6E4E2E", "#6E4E2E"),
+    "protected_area": ("3,3",    "#555555", "#555555"),
+    "nature_reserve": ("4,2",    "#4A7A4A", "#4A7A4A"),
+}
+_BOUNDARY_SW = 0.40        # stroke-width mm
+_BOUNDARY_LABEL_MM = 2.12  # 6pt
+
 
 def _road_style(value: str) -> tuple[float, str] | None:
     """Return (stroke_width_mm, stroke_color) for a road, or None to skip."""
@@ -284,6 +313,269 @@ def _project_osm_geom(
 ) -> list[tuple[float, float]]:
     """Project a list of [[lat, lng], …] to SVG mm coordinates."""
     return [_project_osm_pt(pt[0], pt[1], transformer, proj_to_svg) for pt in geometry]
+
+
+def _define_terrain_hatch_patterns(dwg: "svgwrite.Drawing") -> set[str]:
+    """Register SVG hatch-line ``<pattern>`` defs for every terrain type.
+
+    Returns the set of pattern IDs that were added so callers can use
+    ``fill="url(#<id>)"`` on their polygon elements.
+    """
+    registered: set[str] = set()
+    seen_ids: set[str] = set()
+
+    for _ttype, (pat_id, spacing, angle, color, sw, second_angle) in _TERRAIN_PATTERNS.items():
+        if pat_id in seen_ids:
+            registered.add(pat_id)
+            continue
+        seen_ids.add(pat_id)
+
+        def _add_hatch(pid: str, ang: int) -> None:
+            pat = dwg.defs.add(dwg.pattern(
+                id=pid,
+                x=0, y=0,
+                width=spacing, height=spacing,
+                patternUnits="userSpaceOnUse",
+                patternTransform=f"rotate({ang},0,0)",
+            ))
+            pat.add(dwg.line(
+                start=(0, 0), end=(spacing, 0),
+                stroke=color, stroke_width=sw,
+            ))
+
+        _add_hatch(pat_id, angle)
+        registered.add(pat_id)
+
+        if second_angle is not None:
+            cross_id = pat_id + "-x"
+            if cross_id not in seen_ids:
+                seen_ids.add(cross_id)
+                _add_hatch(cross_id, second_angle)
+                registered.add(cross_id)
+
+    return registered
+
+
+def _render_terrain_fills(
+    dwg: "svgwrite.Drawing",
+    vectors: "OSMVectors",
+    transformer,
+    proj_to_svg,
+    clip_id: str = "map-area",
+) -> None:
+    """Draw terrain-type hatch fills for landuse/natural area polygons.
+
+    Each OSMTerrainArea is filled with a semi-transparent SVG pattern
+    registered by :func:`_define_terrain_hatch_patterns`.  Layer sits
+    above the hillshade raster and below water areas / roads.
+    """
+    if not vectors.terrain_areas:
+        return
+
+    g = dwg.g(id="terrain-fills", clip_path=f"url(#{clip_id})", opacity=_TERRAIN_FILL_OPACITY)
+
+    for area in vectors.terrain_areas:
+        spec = _TERRAIN_PATTERNS.get(area.terrain_type)
+        if spec is None:
+            continue
+        pat_id, _spacing, _angle, _color, _sw, second_angle = spec
+
+        pts = _project_osm_geom(area.geometry, transformer, proj_to_svg)
+        if len(pts) < 3:
+            continue
+
+        # Primary hatch
+        g.add(dwg.polygon(pts, fill=f"url(#{pat_id})", stroke="none"))
+
+        # Cross-hatch (second angle)
+        if second_angle is not None:
+            cross_id = pat_id + "-x"
+            g.add(dwg.polygon(pts, fill=f"url(#{cross_id})", stroke="none"))
+
+    dwg.add(g)
+
+
+def _render_osm_line_labels(
+    dwg: "svgwrite.Drawing",
+    vectors: "OSMVectors",
+    transformer,
+    proj_to_svg,
+    map_x0: float,
+    map_y0: float,
+    map_x1: float,
+    map_y1: float,
+) -> None:
+    """Place inline text labels for named waterways and named trails.
+
+    Labels are positioned at the midpoint of each way (by node index),
+    rotated to follow the local segment direction, and given a white
+    knockout outline for readability against any background.
+    """
+    import math as _m
+
+    FONT = "Liberation Sans, Arial, Helvetica, sans-serif"
+
+    def _label_way(
+        way: "OSMWay",
+        font_size: float,
+        color: str,
+        italic: bool = False,
+    ) -> None:
+        if not way.name:
+            return
+        pts = _project_osm_geom(way.geometry, transformer, proj_to_svg)
+        if len(pts) < 2:
+            return
+
+        # Midpoint by index
+        mid = len(pts) // 2
+        mx, my = pts[mid]
+
+        # Skip labels whose midpoint falls outside the map canvas
+        if not (map_x0 <= mx <= map_x1 and map_y0 <= my <= map_y1):
+            return
+
+        # Angle from surrounding segment
+        i0 = max(0, mid - 1)
+        i1 = min(len(pts) - 1, mid + 1)
+        dx = pts[i1][0] - pts[i0][0]
+        dy = pts[i1][1] - pts[i0][1]
+        angle = _m.degrees(_m.atan2(dy, dx))
+        # Keep text upright (never upside-down)
+        if angle > 90:
+            angle -= 180
+        elif angle < -90:
+            angle += 180
+
+        transform = f"rotate({angle:.1f},{mx:.3f},{my:.3f})"
+        style_italic = "font-style:italic;" if italic else ""
+
+        # White knockout outline — drawn first (behind)
+        outline = dwg.text(
+            way.name,
+            insert=(mx, my - 0.6),
+            font_size=font_size,
+            font_family=FONT,
+            fill="none",
+            stroke="white",
+            stroke_width=0.6,
+            stroke_linejoin="round",
+            text_anchor="middle",
+            transform=transform,
+        )
+        if style_italic:
+            outline["style"] = style_italic
+        dwg.add(outline)
+
+        # Colored fill on top
+        label = dwg.text(
+            way.name,
+            insert=(mx, my - 0.6),
+            font_size=font_size,
+            font_family=FONT,
+            fill=color,
+            text_anchor="middle",
+            transform=transform,
+        )
+        if style_italic:
+            label["style"] = style_italic
+        dwg.add(label)
+
+    # Waterway labels — blue-gray, italic
+    for way in vectors.waterways:
+        _label_way(way, font_size=1.76, color="#5A8EA8", italic=True)
+
+    # Named trail labels — warm tan, normal weight
+    for way in vectors.trails:
+        if way.name:
+            _label_way(way, font_size=1.59, color="#7A6A56", italic=False)
+
+
+def _render_protected_areas(
+    dwg: "svgwrite.Drawing",
+    vectors: "OSMVectors",
+    transformer,
+    proj_to_svg,
+    clip_id: str = "map-area",
+    map_x0: float = 0.0,
+    map_y0: float = 0.0,
+    map_x1: float = 9999.0,
+    map_y1: float = 9999.0,
+) -> None:
+    """Draw dashed boundary lines and inline name labels for protected areas.
+
+    Each boundary type (national park, wilderness, nature reserve) gets a
+    distinct dash pattern and color.  The area name is placed at the centroid
+    of whichever projected ring has the most points inside the map canvas.
+    """
+    import math as _m
+
+    if not vectors.protected_areas:
+        return
+
+    FONT = "Liberation Sans, Arial, Helvetica, sans-serif"
+    g = dwg.g(id="protected-areas", clip_path=f"url(#{clip_id})")
+
+    for area in vectors.protected_areas:
+        style = _BOUNDARY_STYLES.get(area.boundary_type, _BOUNDARY_STYLES["protected_area"])
+        dash, stroke_color, label_color = style
+
+        best_ring_pts: list[tuple[float, float]] = []
+
+        for ring in area.rings:
+            pts = _project_osm_geom(ring, transformer, proj_to_svg)
+            if len(pts) < 2:
+                continue
+
+            poly = dwg.polyline(
+                pts,
+                fill="none",
+                stroke=stroke_color,
+                stroke_width=_BOUNDARY_SW,
+                stroke_linejoin="round",
+                stroke_linecap="round",
+            )
+            poly["stroke-dasharray"] = dash
+            g.add(poly)
+
+            # Track the ring with the most in-canvas points for label placement
+            in_canvas = sum(
+                1 for (px, py) in pts if map_x0 <= px <= map_x1 and map_y0 <= py <= map_y1
+            )
+            if in_canvas > len(best_ring_pts):
+                best_ring_pts = pts
+
+        # Place the area name at the centroid of the most-visible ring
+        if area.name and best_ring_pts:
+            vis_pts = [
+                (px, py) for px, py in best_ring_pts
+                if map_x0 <= px <= map_x1 and map_y0 <= py <= map_y1
+            ]
+            if vis_pts:
+                cx = sum(p[0] for p in vis_pts) / len(vis_pts)
+                cy = sum(p[1] for p in vis_pts) / len(vis_pts)
+
+                # Uppercase, spaced label — white knockout then color
+                for pass_fill, pass_stroke, pass_sw in [
+                    ("none",        "white",       0.7),
+                    (label_color,   "none",        0.0),
+                ]:
+                    t = dwg.text(
+                        area.name.upper(),
+                        insert=(cx, cy),
+                        font_size=_BOUNDARY_LABEL_MM,
+                        font_family=FONT,
+                        fill=pass_fill,
+                        text_anchor="middle",
+                    )
+                    if pass_sw > 0:
+                        t["stroke"] = pass_stroke
+                        t["stroke-width"] = str(pass_sw)
+                        t["stroke-linejoin"] = "round"
+                    t["letter-spacing"] = f"{0.10 * _BOUNDARY_LABEL_MM:.3f}"
+                    dwg.add(t)
+
+    dwg.add(g)
 
 
 def _render_osm_lower_layers(
@@ -1913,11 +2205,32 @@ def render_terrain_svg(
             pass  # degrade gracefully if PIL unavailable
 
     # ------------------------------------------------------------------
+    # 3d. Terrain hatch fills — landuse/natural area polygons.
+    #     Vector hatch patterns overlay the hillshade raster; rendered
+    #     at low opacity so depth information remains visible beneath.
+    # ------------------------------------------------------------------
+    if osm_vectors is not None and transformer is not None and osm_vectors.terrain_areas:
+        _define_terrain_hatch_patterns(dwg)
+        _render_terrain_fills(dwg, osm_vectors, transformer, proj_to_svg, clip_id="map-area")
+
+    # ------------------------------------------------------------------
     # 4. OSM lower layers: water areas, waterways, roads
     #    Rendered above hillshade and below contour lines.
     # ------------------------------------------------------------------
     if osm_vectors is not None and transformer is not None:
         _render_osm_lower_layers(dwg, osm_vectors, transformer, proj_to_svg, clip_id="map-area")
+
+    # ------------------------------------------------------------------
+    # 4a. Protected area boundaries — above roads, below graticule
+    # ------------------------------------------------------------------
+    if osm_vectors is not None and transformer is not None and osm_vectors.protected_areas:
+        # map extents not yet computed at this point — use offset/size directly
+        _render_protected_areas(
+            dwg, osm_vectors, transformer, proj_to_svg,
+            clip_id="map-area",
+            map_x0=offset_x, map_y0=offset_y,
+            map_x1=offset_x + map_w_mm, map_y1=offset_y + map_h_mm,
+        )
 
     # ------------------------------------------------------------------
     # 4b. Graticule — coordinate grid, above OSM, below wind + contours
@@ -2061,6 +2374,16 @@ def render_terrain_svg(
     # ------------------------------------------------------------------
     if osm_vectors is not None and transformer is not None:
         _render_osm_trails(dwg, osm_vectors, transformer, proj_to_svg, clip_id="map-area")
+
+    # ------------------------------------------------------------------
+    # 6a. Waterway + trail name labels — inline rotated text
+    # ------------------------------------------------------------------
+    if osm_vectors is not None and transformer is not None:
+        _render_osm_line_labels(
+            dwg, osm_vectors, transformer, proj_to_svg,
+            map_x0=offset_x, map_y0=offset_y,
+            map_x1=offset_x + map_w_mm, map_y1=offset_y + map_h_mm,
+        )
 
     # ------------------------------------------------------------------
     # 7. Route polyline
