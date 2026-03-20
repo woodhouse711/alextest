@@ -611,6 +611,31 @@ def render(
     click.echo(f"  PNG:      {png_path}")
 
 
+@cli.command("template")
+@click.argument(
+    "output",
+    default="fieldnotes_template.svg",
+    metavar="OUTPUT",
+    required=False,
+)
+def template_cmd(output: str) -> None:
+    """Generate a blank Illustrator-ready SVG template.
+
+    OUTPUT defaults to fieldnotes_template.svg in the current directory.
+
+    Open the file in Illustrator (File → Open), style to taste, then save
+    as .ai.  All groups use the same ``id`` attributes the live pipeline
+    injects into, so the template acts as both a layout reference and a
+    customisable shell for the SVG-template workflow.
+    """
+    from field_atlas.render.template import generate_template
+
+    path = generate_template(output)
+    click.echo(f"  Template: {path}")
+    click.echo("  Open in Illustrator (File → Open) to customise.")
+    click.echo("  Group IDs match the live pipeline injection points.")
+
+
 # ---------------------------------------------------------------------------
 # Direct execution: python -m field_atlas.cli.main
 # ---------------------------------------------------------------------------
