@@ -225,7 +225,7 @@ def cli() -> None:
 )
 @click.option(
     "--wind-streamlines",
-    default=200,
+    default=600,
     show_default=True,
     metavar="N",
     help=(
@@ -424,16 +424,7 @@ def render(
                 click.echo(f"  Wind:     loaded {len(computed_streamlines)} streamlines from {streamlines_file}")
             except Exception as exc:
                 click.echo(f"  Wind:     could not read {streamlines_file} — {exc}", err=True)
-        else:
-            # Fallback: load from cache if available (e.g. no --date supplied).
-            _cache_wind = _CACHE_DIR / f"wind_streamlines_{slug}.json"
-            if _cache_wind.exists():
-                try:
-                    computed_streamlines = load_streamlines_from_file(_cache_wind)
-                    click.echo(f"  Wind:     loaded {len(computed_streamlines)} streamlines from cache")
-                except Exception as exc:
-                    click.echo(f"  Wind:     cache load failed — {exc}", err=True)
-        if computed_streamlines is None and enrichment is not None and enrichment.weather is not None:
+        if enrichment is not None and enrichment.weather is not None:
             try:
                 w = enrichment.weather
                 u_field, v_field = build_wind_field(
@@ -474,6 +465,37 @@ def render(
                     pass
             except Exception as exc:
                 click.echo(f"  Wind:     streamline computation failed — {exc}", err=True)
+        if computed_streamlines is None:
+            # Synthetic fallback: generate from DEM with default SW wind.
+            # Always uses current map bounds so coverage is complete.
+            try:
+                import math as _math
+                _SYNTH_SPD = 19.0
+                _SYNTH_DIR = 225.0
+                u_field, v_field = build_wind_field(
+                    elevation=elevation,
+                    wind_speed_kmh=_SYNTH_SPD,
+                    wind_direction_deg=_SYNTH_DIR,
+                    bounds_projected=projected_bounds,
+                )
+                _pw = projected_bounds["max_x"] - projected_bounds["min_x"]
+                _ph = projected_bounds["max_y"] - projected_bounds["min_y"]
+                _aspect = _pw / _ph if _ph > 0 else 1.0
+                _grid_cols = max(6, int(round(_math.sqrt(wind_streamlines * _aspect))))
+                _grid_rows = max(6, int(round(wind_streamlines / _grid_cols)))
+                computed_streamlines = trace_streamlines(
+                    u_field, v_field,
+                    bounds_projected=projected_bounds,
+                    num_streamlines=wind_streamlines,
+                    wind_direction_deg=_SYNTH_DIR,
+                    wind_speed_kmh=_SYNTH_SPD,
+                    seed=42,
+                    grid_rows=_grid_rows,
+                    grid_cols=_grid_cols,
+                )
+                click.echo(f"  Wind:     {len(computed_streamlines)} synthetic streamlines (SW {_SYNTH_SPD:.0f} km/h)")
+            except Exception as exc:
+                click.echo(f"  Wind:     synthetic generation failed — {exc}", err=True)
 
     # ------------------------------------------------------------------
     # Step 8c: DEM-based features — peaks and lakes (offline fallback)

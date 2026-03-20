@@ -687,38 +687,30 @@ def _render_wind_streamlines(
     proj_to_svg: "Callable[[float, float], tuple[float, float]]",
     clip_id: str = "map-area",
 ) -> None:
-    """Render pre-computed wind streamlines with a luminous, hint.fm-inspired aesthetic.
+    """Render wind streamlines as thin dark directional arrows.
 
-    Each streamline is drawn in two passes to simulate a glow effect without
-    relying on SVG filter support (which cairosvg does not honour):
-
-    1. **Aura pass** — a wide, soft-edged stroke at low opacity that mimics
-       the diffuse glow around each wind particle in the hint.fm map.
-    2. **Core pass** — a narrow tapered stroke at higher opacity that gives
-       each line a bright, precise centre.
-
-    Together the two passes read like long-exposure light streaks.  Direction
-    is implied by the taper (thin tail → thick head); no arrowheads are drawn,
-    keeping the layer atmospheric rather than navigational.
+    Each streamline is drawn as a single thin charcoal line with an open
+    V-arrowhead at the tip to show wind direction.  At high density the
+    arrows form a texture without any individual line dominating.
 
     Rendering parameters
     --------------------
-    * Color: ``#4A9CC7`` — vibrant sky blue, luminous against cream/hillshade.
-    * Core opacity:  0.20 (calm) → 0.72 (gusty).
-    * Aura opacity:  0.05 (calm) → 0.18 (gusty)  [~25 % of core].
-    * Core widths:   tail 0.035 mm → head 0.20–0.52 mm.
-    * Aura widths:   tail 0.12  mm → head 0.65–1.70 mm  (3.25× core head).
-    * Taper curve:   square-root ramp for a comet-like thick body.
-    * Segments:      40 (core) / 20 (aura) per streamline.
+    * Color:       ``#2B3D4F`` — dark slate, reads as a pencil-weight mark.
+    * Stroke:      0.13 mm — thin enough that 600 arrows read as texture.
+    * Opacity:     0.22 (calm) → 0.48 (gusty), speed-variable.
+    * Arrowhead:   open V, wings 1.3 mm at ±28° off the shaft.
 
     Layer placement: above graticule, below contours.
     """
+    import math as _math
+
     if not streamlines:
         return
 
-    _N_CORE = 40
-    _N_AURA = 20
-    _COLOR  = "#4A9CC7"
+    _COLOR      = "#2B3D4F"   # dark slate
+    _SW         = 0.13        # shaft stroke width (mm)
+    _WING_LEN   = 1.3         # arrowhead wing length (mm)
+    _WING_ANGLE = 28          # degrees off the shaft axis
 
     g = dwg.g(id="wind-streamlines", clip_path=f"url(#{clip_id})")
 
@@ -739,55 +731,55 @@ def _render_wind_streamlines(
 
     # --- Draw each streamline -----------------------------------------------
     for stream, mean_spd in zip(streamlines, mean_speeds):
-        if len(stream) < 4:
+        if len(stream) < 3:
             continue
 
         speed_norm = min(1.0, mean_spd / p90_speed)
+        opacity    = round(0.22 + 0.26 * speed_norm, 3)
 
-        # Core: visible even in calm zones; blazing in fast zones.
-        opacity_core = round(0.20 + 0.52 * speed_norm, 3)
-        # Aura: ~25 % of core opacity — creates the diffuse halo.
-        opacity_aura = round(0.05 + 0.13 * speed_norm, 3)
-
-        # Core widths — thin tail, rounded head.
-        wc_tail = 0.035
-        wc_head = 0.20 + 0.32 * speed_norm   # 0.20 (calm) → 0.52 mm (gusty)
-
-        # Aura widths — ~3.25× the core head for a wide soft halo.
-        wa_tail = 0.12
-        wa_head = wc_head * 3.25
-
-        n_pts   = len(stream)
         svg_pts = [proj_to_svg(float(x), float(y)) for x, y, _ in stream]
 
-        sg = dwg.g(style="isolation:isolate")
+        sg = dwg.g(opacity=opacity)
 
-        def _add_pass(n_segs: int, w_tail: float, w_head: float, opacity: float) -> None:
-            pass_g = dwg.g(opacity=opacity)
-            for seg_i in range(n_segs):
-                i_start = int(round(seg_i       / n_segs * (n_pts - 1)))
-                i_end   = int(round((seg_i + 1) / n_segs * (n_pts - 1)))
-                if i_end <= i_start:
-                    i_end = i_start + 1
-                i_end = min(i_end, n_pts - 1)
-                seg_svg = svg_pts[i_start : i_end + 1]
-                if len(seg_svg) < 2:
-                    continue
-                t_mid = (seg_i + 0.5) / n_segs
-                ramp  = t_mid ** 0.5          # square-root: fast build from tail
-                w = w_tail + (w_head - w_tail) * ramp
-                pass_g.add(dwg.polyline(
-                    seg_svg,
+        # Shaft
+        sg.add(dwg.polyline(
+            svg_pts,
+            stroke=_COLOR,
+            stroke_width=_SW,
+            stroke_linecap="round",
+            stroke_linejoin="round",
+            fill="none",
+        ))
+
+        # Open V arrowhead at the tip
+        if len(svg_pts) >= 2:
+            px, py = svg_pts[-2]
+            tx, ty = svg_pts[-1]
+            dx, dy = tx - px, ty - py
+            L = _math.sqrt(dx * dx + dy * dy)
+            if L > 1e-9:
+                # Unit vector pointing backward from tip
+                bx, by = -dx / L, -dy / L
+                a = _math.radians(_WING_ANGLE)
+                cos_a, sin_a = _math.cos(a), _math.sin(a)
+                # Rotate backward vector ±angle to get wing directions
+                w1x = bx * cos_a - by * sin_a
+                w1y = bx * sin_a + by * cos_a
+                w2x = bx * cos_a + by * sin_a
+                w2y = -bx * sin_a + by * cos_a
+                arrow_pts = [
+                    (tx + w1x * _WING_LEN, ty + w1y * _WING_LEN),
+                    (tx, ty),
+                    (tx + w2x * _WING_LEN, ty + w2y * _WING_LEN),
+                ]
+                sg.add(dwg.polyline(
+                    arrow_pts,
                     stroke=_COLOR,
-                    stroke_width=round(w, 4),
-                    stroke_linecap="round",
-                    stroke_linejoin="round",
+                    stroke_width=_SW,
+                    stroke_linecap="butt",
+                    stroke_linejoin="miter",
                     fill="none",
                 ))
-            sg.add(pass_g)
-
-        _add_pass(_N_AURA, wa_tail, wa_head, opacity_aura)   # soft halo first
-        _add_pass(_N_CORE, wc_tail, wc_head, opacity_core)   # sharp core on top
 
         g.add(sg)
 
