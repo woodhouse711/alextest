@@ -619,7 +619,7 @@ def _render_osm_lower_layers(
         pts = _project_osm_geom(way.geometry, transformer, proj_to_svg)
         if len(pts) < 2:
             continue
-        sw = 0.5 if way.value == "river" else 0.2
+        sw = 1.1 if way.value == "river" else 0.45
         g_ww.add(dwg.polyline(
             pts,
             stroke=_WATERWAY_COLOR,
@@ -2185,7 +2185,7 @@ def render_terrain_svg(
             _img_el = dwg.image(href=_href, insert=_hs_insert, size=_hs_size)
             _img_el["preserveAspectRatio"] = "none"
             _img_el["style"] = "mix-blend-mode:multiply;image-rendering:smooth;"
-            _hs_g = dwg.g(clip_path="url(#map-area)", opacity=0.30)
+            _hs_g = dwg.g(clip_path="url(#map-area)", opacity=0.18)
             _hs_g.add(_img_el)
             dwg.add(_hs_g)
         except Exception as _hs_err:

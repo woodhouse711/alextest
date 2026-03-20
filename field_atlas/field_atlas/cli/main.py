@@ -161,7 +161,7 @@ def cli() -> None:
 )
 @click.option(
     "--padding",
-    default=0.2,
+    default=0.4,
     show_default=True,
     metavar="FRACTION",
     help="Fractional padding added to each edge of the bounding box.",
@@ -424,7 +424,16 @@ def render(
                 click.echo(f"  Wind:     loaded {len(computed_streamlines)} streamlines from {streamlines_file}")
             except Exception as exc:
                 click.echo(f"  Wind:     could not read {streamlines_file} — {exc}", err=True)
-        elif enrichment is not None and enrichment.weather is not None:
+        else:
+            # Fallback: load from cache if available (e.g. no --date supplied).
+            _cache_wind = _CACHE_DIR / f"wind_streamlines_{slug}.json"
+            if _cache_wind.exists():
+                try:
+                    computed_streamlines = load_streamlines_from_file(_cache_wind)
+                    click.echo(f"  Wind:     loaded {len(computed_streamlines)} streamlines from cache")
+                except Exception as exc:
+                    click.echo(f"  Wind:     cache load failed — {exc}", err=True)
+        if computed_streamlines is None and enrichment is not None and enrichment.weather is not None:
             try:
                 w = enrichment.weather
                 u_field, v_field = build_wind_field(
