@@ -1,0 +1,138 @@
+{
+  "bounds": {
+    "min_lat": 42.420,
+    "max_lat": 42.480,
+    "min_lng": -71.150,
+    "max_lng": -71.080
+  },
+  "features": [
+    {
+      "name": "Bear Hill",
+      "feature_type": "peak",
+      "lat": 42.4471,
+      "lng": -71.1072,
+      "elevation_m": 146.0,
+      "osm_id": 358603401
+    },
+    {
+      "name": "Wenepoykin Hill",
+      "feature_type": "peak",
+      "lat": 42.4418,
+      "lng": -71.1134,
+      "elevation_m": 128.0,
+      "osm_id": 358603402
+    },
+    {
+      "name": "Black Rock",
+      "feature_type": "peak",
+      "lat": 42.4563,
+      "lng": -71.1098,
+      "elevation_m": 131.0,
+      "osm_id": 358603403
+    },
+    {
+      "name": "Spot Pond",
+      "feature_type": "reservoir",
+      "lat": 42.4537,
+      "lng": -71.0944,
+      "elevation_m": null,
+      "osm_id": 159804501
+    },
+    {
+      "name": "Quarter Mile Pond",
+      "feature_type": "pond",
+      "lat": 42.4389,
+      "lng": -71.1181,
+      "elevation_m": null,
+      "osm_id": 159804502
+    },
+    {
+      "name": "Long Pond",
+      "feature_type": "pond",
+      "lat": 42.4601,
+      "lng": -71.1205,
+      "elevation_m": null,
+      "osm_id": 159804503
+    },
+    {
+      "name": "Bear Hill Overlook",
+      "feature_type": "viewpoint",
+      "lat": 42.4468,
+      "lng": -71.1075,
+      "elevation_m": 143.0,
+      "osm_id": 458701205
+    },
+    {
+      "name": "Rock Circuit Ledges",
+      "feature_type": "viewpoint",
+      "lat": 42.4552,
+      "lng": -71.1156,
+      "elevation_m": 118.0,
+      "osm_id": 458701206
+    },
+    {
+      "name": "Rock Circuit Trail",
+      "feature_type": "trail",
+      "lat": 42.4510,
+      "lng": -71.1130,
+      "elevation_m": null,
+      "osm_id": 259905301
+    },
+    {
+      "name": "Skyline Trail",
+      "feature_type": "trail",
+      "lat": 42.4455,
+      "lng": -71.1088,
+      "elevation_m": null,
+      "osm_id": 259905302
+    },
+    {
+      "name": "Cross Fells Trail",
+      "feature_type": "trail",
+      "lat": 42.4492,
+      "lng": -71.1175,
+      "elevation_m": null,
+      "osm_id": 259905303
+    },
+    {
+      "name": "Pine Hill Trail",
+      "feature_type": "trail",
+      "lat": 42.4430,
+      "lng": -71.1220,
+      "elevation_m": null,
+      "osm_id": 259905304
+    },
+    {
+      "name": "Rock Circuit Trail Lean-to",
+      "feature_type": "shelter",
+      "lat": 42.4571,
+      "lng": -71.1189,
+      "elevation_m": null,
+      "osm_id": 859105601
+    },
+    {
+      "name": "Sheepfold Parking Area",
+      "feature_type": "parking",
+      "lat": 42.4430,
+      "lng": -71.1005,
+      "elevation_m": null,
+      "osm_id": 658903401
+    },
+    {
+      "name": "MWRA South Area Parking",
+      "feature_type": "parking",
+      "lat": 42.4381,
+      "lng": -71.1143,
+      "elevation_m": null,
+      "osm_id": 658903402
+    },
+    {
+      "name": "Fellsway West Parking",
+      "feature_type": "parking",
+      "lat": 42.4512,
+      "lng": -71.1302,
+      "elevation_m": null,
+      "osm_id": 658903403
+    }
+  ]
+}

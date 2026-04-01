@@ -1,0 +1,32 @@
+{
+  "date": "2024-06-15",
+  "latitude": 42.4491,
+  "longitude": -71.114,
+  "temperature_min_c": 15.8,
+  "temperature_max_c": 27.3,
+  "temperature_mean_c": 21.4,
+  "precipitation_mm": 0.0,
+  "wind_speed_max_kmh": 19.4,
+  "wind_direction_dominant_deg": 225.0,
+  "wind_direction_cardinal": "SW",
+  "cloud_cover_mean_pct": 32.0,
+  "conditions_summary": "Mostly clear, warm (27\u00b0C high), moderate SW winds",
+  "hourly_temperatures": [
+    16.8, 16.2, 15.9, 15.8, 16.1, 17.0,
+    18.4, 20.1, 21.7, 23.2, 24.5, 25.6,
+    26.4, 27.0, 27.3, 27.1, 26.5, 25.6,
+    24.3, 22.8, 21.5, 20.3, 19.2, 18.4
+  ],
+  "hourly_wind_speeds": [
+    6.2, 5.8, 5.4, 5.1, 5.3, 6.0,
+    7.4, 9.2, 11.8, 14.3, 16.1, 17.8,
+    18.5, 19.4, 18.9, 17.6, 16.2, 14.8,
+    12.9, 11.0, 9.3, 8.1, 7.2, 6.8
+  ],
+  "hourly_precipitation": [
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0
+  ]
+}
