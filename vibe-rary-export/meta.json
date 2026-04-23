@@ -1,0 +1,12 @@
+{
+  "title": "alextest",
+  "description": "Alex's first GitHub repository — a minimal hello-world starting point created to learn git and GitHub workflows.",
+  "date": "2024-08-20",
+  "tags": ["hello-world", "git", "beginner", "test"],
+  "status": "draft",
+  "format": "html",
+  "render": "iframe",
+  "aspect": "16:9",
+  "version": "1.0.0",
+  "source": "https://github.com/woodhouse711/alextest"
+}

@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>alextest</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: #0d1117;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace;
+      color: #e6edf3;
+    }
+
+    .card {
+      max-width: 560px;
+      width: 90%;
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-radius: 12px;
+      padding: 48px 40px;
+      text-align: center;
+    }
+
+    .badge {
+      display: inline-block;
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: #58a6ff;
+      background: rgba(88, 166, 255, 0.1);
+      border: 1px solid rgba(88, 166, 255, 0.3);
+      border-radius: 20px;
+      padding: 4px 14px;
+      margin-bottom: 28px;
+    }
+
+    h1 {
+      font-size: 2.4rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      color: #e6edf3;
+      margin-bottom: 16px;
+    }
+
+    h1 span {
+      color: #58a6ff;
+    }
+
+    .tagline {
+      font-size: 1rem;
+      color: #8b949e;
+      line-height: 1.6;
+      margin-bottom: 36px;
+    }
+
+    .commits {
+      display: flex;
+      gap: 12px;
+      justify-content: center;
+      flex-wrap: wrap;
+      margin-bottom: 36px;
+    }
+
+    .commit {
+      background: #0d1117;
+      border: 1px solid #30363d;
+      border-radius: 8px;
+      padding: 12px 20px;
+      font-size: 13px;
+      text-align: left;
+    }
+
+    .commit .sha {
+      font-family: monospace;
+      color: #58a6ff;
+      font-size: 11px;
+      margin-bottom: 4px;
+    }
+
+    .commit .msg {
+      color: #e6edf3;
+    }
+
+    .commit .date {
+      color: #8b949e;
+      font-size: 11px;
+      margin-top: 4px;
+    }
+
+    .footer {
+      font-size: 12px;
+      color: #484f58;
+    }
+
+    .dot {
+      display: inline-block;
+      width: 8px;
+      height: 8px;
+      background: #3fb950;
+      border-radius: 50%;
+      margin-right: 6px;
+      animation: pulse 2s ease-in-out infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.4; }
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="badge">First Repo</div>
+    <h1>alex<span>test</span></h1>
+    <p class="tagline">
+      Alex's first GitHub repository — a minimal hello-world starting point
+      created to learn git and GitHub workflows.
+    </p>
+
+    <div class="commits">
+      <div class="commit">
+        <div class="sha">7b121e8</div>
+        <div class="msg">Initial commit</div>
+        <div class="date">Aug 20, 2024</div>
+      </div>
+      <div class="commit">
+        <div class="sha">63bb80c</div>
+        <div class="msg">Update README.md</div>
+        <div class="date">Aug 20, 2024</div>
+      </div>
+    </div>
+
+    <div class="footer">
+      <span class="dot"></span>
+      woodhouse711/alextest &nbsp;·&nbsp; 2 commits &nbsp;·&nbsp; 1 file
+    </div>
+  </div>
+</body>
+</html>
